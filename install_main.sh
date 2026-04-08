@@ -9,8 +9,8 @@
 ################################################################################
 ORP_VERSION="2.1.3"
 
-REQUIRED_OS_VER="10"
-REQUIRED_OS_NAME="Buster"
+REQUIRED_OS_VER="12"
+REQUIRED_OS_NAME="Bookworm"
 
 # File System Requirements
 MIN_PARTITION_SIZE="3000"
@@ -23,13 +23,13 @@ WWW_PATH="/var/www"
 GUI_NAME="openrepeater"
 
 # PHP ini config file
-PHP_INI="/etc/php/7.3/fpm/php.ini"
+PHP_INI="/etc/php/8.2/fpm/php.ini"
 
 #SVXLink
 SVXLINK_SOUNDS_DIR="/usr/share/svxlink/sounds"
 
 # SVXLINK VERSION - Must match versioning at https://github.com/sm0svx/svxlink/releases
-SVXLINK_VER="19.09.1"
+SVXLINK_VER="24.02"
 ORP_RMT_RELAY_BRANCH="1.1" ### FOR DEPRECIATED FUNCTION
 
 
@@ -48,6 +48,7 @@ source "${BASH_SOURCE%/*}/functions/functions.sh"
 source "${BASH_SOURCE%/*}/functions/functions_rpi.sh"
 source "${BASH_SOURCE%/*}/functions/functions_motd.sh"
 source "${BASH_SOURCE%/*}/functions/functions_ics.sh"
+source "${BASH_SOURCE%/*}/functions/functions_os_patches.sh"
 
 
 ### INITIAL FUNCTIONS ####
@@ -93,7 +94,9 @@ fi
 Run script and output to log file
 (
 	date
-	
+
+	fixup_dtoverlay_linking
+
 	set_hostname $HOSTNAME
 
 	### SVXLINK FUNCTIONS ###
@@ -124,6 +127,17 @@ Run script and output to log file
 	### OPEN REPEATER FUCNTIONS ###
 	if [ $INPUT_INSTALL_TYPE = "ORP" ]; then
 		install_webserver
+
+		# Configure PHP sessions for tmpfs compatibility
+		mkdir -p /etc/php/8.2/fpm/conf.d
+		cat > /etc/php/8.2/fpm/conf.d/99-openrepeater.ini << 'EOF'
+session.save_path = /var/lib/php/sessions
+upload_tmp_dir = /tmp
+sys_temp_dir = /tmp
+EOF
+		mkdir -p /var/lib/php/sessions
+		chown www-data:www-data /var/lib/php/sessions
+
 		install_orp_dependancies
 		wait_for_network
 		install_orp_from_github

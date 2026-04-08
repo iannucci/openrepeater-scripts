@@ -39,8 +39,8 @@ function check_internet {
 ################################################################################
 
 function check_os {
-	# Detects ARM processor
-	if (cat < /proc/cpuinfo | grep ARM > /dev/null) ; then
+	# Detects ARM processor (armhf or arm64/aarch64)
+	if (dpkg --print-architecture | grep -qE 'armhf|arm64') ; then
 		PROCESSOR="ARM"
 	else
 		PROCESSOR="UNSUPPORTED"
@@ -146,9 +146,9 @@ function install_svxlink_source () {
 
 	# Install required packages
  	apt-get update
-	apt-get install --assume-yes --fix-missing g++ cmake make libsigc++-2.0-dev libgsm1-dev libpopt-dev tcl8.5-dev \
+	apt-get install --assume-yes --fix-missing g++ cmake make libsigc++-2.0-dev libgsm1-dev libpopt-dev tcl-dev \
 		libgcrypt20-dev libspeex-dev libasound2-dev libopus-dev librtlsdr-dev doxygen \
-		groff alsa-utils vorbis-tools curl git libcurl4-openssl-dev
+		groff alsa-utils vorbis-tools curl git libcurl4-openssl-dev libgpiod-dev libjsoncpp-dev
 
 	# Add svxlink user and add to user groups
 	useradd -r svxlink
@@ -269,7 +269,7 @@ function enable_i2c {
 
 	apt-get install --assume-yes --fix-missing i2c-tools
 
-	sed -i /boot/config.txt -e "s#\#dtparam=i2c_arm=on#dtparam=i2c_arm=on#"
+	sed -i /boot/firmware/config.txt -e "s#\#dtparam=i2c_arm=on#dtparam=i2c_arm=on#"
 	echo "i2c-dev" >> /etc/modules
 }
 ################################################################################
@@ -279,7 +279,7 @@ function config_ics_controllers {
 	echo " Enable ICS Controller intergrations"
 	echo "--------------------------------------------------------------"
 
-	cat >> /boot/config.txt <<- DELIM
+	cat >> /boot/firmware/config.txt <<- DELIM
 		#Enable FE-Pi Overlay
 		dtoverlay=fe-pi-audio
 		dtoverlay=i2s-mmap
@@ -301,10 +301,10 @@ function install_webserver {
 	echo "--------------------------------------------------------------"
 	echo " Installing NGINX and PHP"
 	echo "--------------------------------------------------------------"
-	apt-get install --assume-yes --fix-missing nginx-extras;
-	apt-get install --assume-yes --fix-missing nginx memcached ssl-cert \
-		openssl-blacklist php-common php-fpm php-common php-curl php-dev php-gd php-imagick php-mcrypt \
-		php-memcached php-pspell php-snmp php-sqlite3 php-xmlrpc php7.3-xml php-pear php-ssh2 php-cli php-zip
+	apt-get install --assume-yes --fix-missing nginx;
+	apt-get install --assume-yes --fix-missing memcached ssl-cert \
+		php-common php-fpm php-common php-curl php-dev php-gd php-imagick \
+		php-memcached php-pspell php-snmp php-sqlite3 php8.2-xml php-pear php-ssh2 php-cli php-zip
 	
 	apt-get clean
 	
@@ -312,9 +312,9 @@ function install_webserver {
 	echo " Backup original config files"
 	echo "--------------------------------------------------------------"
 	cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.orig
-	cp /etc/php/7.3/fpm/php-fpm.conf /etc/php/7.3/fpm/php-fpm.conf.orig
-	cp /etc/php/7.3/fpm/php.ini /etc/php/7.3/fpm/php.ini.orig
-	cp /etc/php/7.3/fpm/pool.d/www.conf /etc/php/7.3/fpm/pool.d/www.conf.orig
+	cp /etc/php/8.2/fpm/php-fpm.conf /etc/php/8.2/fpm/php-fpm.conf.orig
+	cp /etc/php/8.2/fpm/php.ini /etc/php/8.2/fpm/php.ini.orig
+	cp /etc/php/8.2/fpm/pool.d/www.conf /etc/php/8.2/fpm/pool.d/www.conf.orig
 	
 	echo "--------------------------------------------------------------"
 	echo " Installing self signed SSL certificate"
@@ -375,7 +375,7 @@ function install_webserver {
 		   location ~ \.php$ {
 		      include snippets/fastcgi-php.conf;
 		      include fastcgi_params;
-		      fastcgi_pass unix:/var/run/php/php7.3-fpm.sock;
+		      fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
 		      fastcgi_param   SCRIPT_FILENAME /var/www/openrepeater/$fastcgi_script_name;
 		      error_page  404   404.php;
 		      fastcgi_intercept_errors on;		
@@ -418,11 +418,11 @@ function install_orp_dependancies {
 	echo " Installing OpenRepeater/SVXLink Dependencies"
 	echo "--------------------------------------------------------------"
 
-	apt-get install --assume-yes --fix-missing alsa-base alsa-utils bzip2 cron dialog fail2ban flite gawk \
-		git-core gpsd gpsd-clients i2c-tools inetutils-syslogd install-info libasound2 libasound2-plugin-equal \
+	apt-get install --assume-yes --fix-missing alsa-utils bzip2 cron dialog fail2ban flite gawk \
+		git-core gpsd gpsd-clients i2c-tools install-info libasound2 libasound2-plugin-equal \
 		libgcrypt20 libgsm1 libopus0 libpopt0 libsigc++-2.0-0v5 libsox-fmt-mp3 libxml2 libxml2-dev \
-		libxslt1-dev logrotate ntp python3-configobj python-cheetah python3-dev \
-		python3-pip python3-usb python3-serial python3-serial resolvconf screen sox sqlite3 \
+		libxslt1-dev logrotate ntp python3-configobj python3-dev \
+		python3-pip python3-usb python3-serial screen sox sqlite3 \
 		sudo tcl8.6 time tk8.6 usbutils uuid vim vorbis-tools watchdog wvdial
 
 	# w3rcr -> network-manager package was removed as it caused instability 
@@ -448,7 +448,7 @@ function install_orp_from_github {
 
 	rm -rf $WWW_PATH/$GUI_NAME/*
 	cd $WWW_PATH
-	git clone -b 2.1.3 --single-branch https://github.com/OpenRepeater/openrepeater.git $WWW_PATH/$GUI_NAME
+	git clone -b 2.1.3-bookworm --single-branch https://github.com/iannucci/openrepeater.git $WWW_PATH/$GUI_NAME
 
 	if [ $ORP_FILE_LOCATIONS = "dev" ]; then
 		#######################################################################
@@ -564,6 +564,9 @@ function modify_sudoers {
 	cat >> "/etc/sudoers" <<- DELIM
 		# OPENREPEATER: allow www-data to access orp_helper
 		www-data   ALL=(ALL) NOPASSWD: /usr/sbin/orp_helper
+		www-data   ALL=(ALL) NOPASSWD: /bin/systemctl restart svxlink
+		www-data   ALL=(ALL) NOPASSWD: /bin/systemctl stop svxlink
+		www-data   ALL=(ALL) NOPASSWD: /bin/systemctl start svxlink
 		DELIM
 }
 

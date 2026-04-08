@@ -10,18 +10,15 @@ function rpi_disables {
 	echo "--------------------------------------------------------------"
 	echo " Disable onboard HDMI sound card not used in OpenRepeater"
 	echo "--------------------------------------------------------------"
-	#/boot/config.txt
-	sed -i /boot/config.txt -e"s#dtparam=audio=on#\#dtparam=audio=on#"
+	#/boot/firmware/config.txt
+	sed -i /boot/firmware/config.txt -e"s#dtparam=audio=on#\#dtparam=audio=on#"
 
 	# Enable audio (loads snd_bcm2835)
 	# dtparam=audio=on
 	# /etc/modules
 	sed -i /etc/modules -e"s#snd-bcm2835#\#snd-bcm2835#"
 
-	# echo "--------------------------------------------------------------"
-	# echo " Disable PI user for security"
-	# echo "--------------------------------------------------------------"
-	deluser -remove-home pi
+	# Bookworm images don't have a default pi user, so no need to remove it
 }
 
 ################################################################################
