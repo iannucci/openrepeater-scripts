@@ -49,6 +49,7 @@ source "${BASH_SOURCE%/*}/functions/functions_rpi.sh"
 source "${BASH_SOURCE%/*}/functions/functions_motd.sh"
 source "${BASH_SOURCE%/*}/functions/functions_ics.sh"
 source "${BASH_SOURCE%/*}/functions/functions_os_patches.sh"
+source "${BASH_SOURCE%/*}/functions/functions_readonly.sh"
 
 
 ### INITIAL FUNCTIONS ####
@@ -145,6 +146,7 @@ EOF
 		update_versioning
 		modify_sudoers
 		install_logrotate_config
+		configure_readonly_root
 
 		### ENDING FUNCTIONS ###
 		rpi_disables
