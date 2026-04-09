@@ -13,8 +13,10 @@ function rpi_disables {
 	#/boot/firmware/config.txt
 	sed -i /boot/firmware/config.txt -e"s#dtparam=audio=on#\#dtparam=audio=on#"
 
-	# Enable audio (loads snd_bcm2835)
-	# dtparam=audio=on
+	# Disable HDMI audio so Fe-Pi audio codec becomes card 0
+	sed -i /boot/firmware/config.txt -e"s#dtoverlay=vc4-kms-v3d\$#dtoverlay=vc4-kms-v3d,noaudio#"
+	sed -i /boot/firmware/config.txt -e"s#dtoverlay=vc4-fkms-v3d\$#dtoverlay=vc4-fkms-v3d,noaudio#"
+
 	# /etc/modules
 	sed -i /etc/modules -e"s#snd-bcm2835#\#snd-bcm2835#"
 

@@ -222,8 +222,10 @@ function fix_svxlink_gpio {
 	After=systemd-modules.load.service\n\
 	After=network.target\n\
 	Before=sysvinit.target\n\
-	ConditionPathExists=/sys/class/i2c-adapter#"
-	
+	ConditionPathExists=/sys/class/i2c-dev#"
+
+	# Enable the service (disabled by default in SVXLink 24.02)
+	systemctl enable svxlink_gpio_setup
 }
 
 ################################################################################
