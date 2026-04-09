@@ -567,6 +567,11 @@ function modify_sudoers {
 		www-data   ALL=(ALL) NOPASSWD: /bin/systemctl restart svxlink
 		www-data   ALL=(ALL) NOPASSWD: /bin/systemctl stop svxlink
 		www-data   ALL=(ALL) NOPASSWD: /bin/systemctl start svxlink
+		www-data   ALL=(ALL) NOPASSWD: /usr/local/bin/save-db
+		www-data   ALL=(ALL) NOPASSWD: /bin/mount -o remount\,rw /
+		www-data   ALL=(ALL) NOPASSWD: /bin/mount -o remount\,ro /
+		www-data   ALL=(ALL) NOPASSWD: /bin/cp /var/lib/openrepeater/db/openrepeater.db /opt/openrepeater/openrepeater.db.seed
+		www-data   ALL=(ALL) NOPASSWD: /bin/sync
 		DELIM
 }
 
