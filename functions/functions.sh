@@ -579,6 +579,62 @@ function modify_sudoers {
 
 ################################################################################
 
+function install_logrotate_config {
+	echo "--------------------------------------------------------------"
+	echo " Installing logrotate config for OpenRepeater"
+	echo "--------------------------------------------------------------"
+	cat > /etc/logrotate.d/openrepeater << 'DELIM'
+# Logrotate config for OpenRepeater
+# Keeps logs bounded so USB logging drive doesn't fill up
+
+/var/log/svxlink {
+    weekly
+    rotate 4
+    maxsize 10M
+    missingok
+    notifempty
+    copytruncate
+}
+
+/var/log/nginx/access.log {
+    weekly
+    rotate 4
+    maxsize 10M
+    missingok
+    notifempty
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        [ -f /run/nginx.pid ] && kill -USR1 $(cat /run/nginx.pid) 2>/dev/null || true
+    endscript
+}
+
+/var/log/nginx/error.log {
+    weekly
+    rotate 4
+    maxsize 5M
+    missingok
+    notifempty
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        [ -f /run/nginx.pid ] && kill -USR1 $(cat /run/nginx.pid) 2>/dev/null || true
+    endscript
+}
+
+/var/log/auth.log /var/log/syslog {
+    weekly
+    rotate 4
+    maxsize 5M
+    missingok
+    notifempty
+    copytruncate
+}
+DELIM
+}
+
+################################################################################
+
 function update_versioning {
 	echo "--------------------------------------------------------------"
 	echo " Setting ORP Build Version"

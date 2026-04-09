@@ -144,7 +144,8 @@ EOF
 		# install_orp_modules ### DEPRECIATED
 		update_versioning
 		modify_sudoers
-		
+		install_logrotate_config
+
 		### ENDING FUNCTIONS ###
 		rpi_disables
 		set_motd
