@@ -600,6 +600,26 @@ function install_custom_modules {
 
 ################################################################################
 
+function finalize_svxlink_ownership {
+	# Final ownership pass on /etc/svxlink. install_orp_from_github already
+	# chowns this tree, but svxlink's `make install` (in install_svxlink_source,
+	# run earlier) leaves some of the default svxlink.d/*.conf files owned by
+	# svxlink:daemon depending on build timing — forensic investigation of a
+	# completed build showed ModuleDtmfRepeater.conf, ModuleFrn.conf,
+	# ModuleMetarInfo.conf, ModulePropagationMonitor.conf, ModuleSelCallEnc.conf,
+	# ModuleTclVoiceMail.conf, and ModuleTrx.conf ended up svxlink:daemon,
+	# which blocks ORP's php-fpm process (running as www-data) from rewriting
+	# them on "Rebuild & Restart" with a Permission denied error.
+	#
+	# This is a belt-and-suspenders idempotent fix at the end of the build.
+	echo "--------------------------------------------------------------"
+	echo " Final ownership pass on /etc/svxlink"
+	echo "--------------------------------------------------------------"
+	chown -R www-data:www-data /etc/svxlink
+}
+
+################################################################################
+
 function modify_sudoers {
 	echo "--------------------------------------------------------------"
 	echo " Setting up sudoers permissions for OpenRepeater"

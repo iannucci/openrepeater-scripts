@@ -147,6 +147,7 @@ EOF
 		update_versioning
 		modify_sudoers
 		install_logrotate_config
+		finalize_svxlink_ownership
 		configure_readonly_root
 
 		### ENDING FUNCTIONS ###
