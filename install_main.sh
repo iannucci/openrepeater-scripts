@@ -143,6 +143,7 @@ EOF
 		wait_for_network
 		install_orp_from_github
 		# install_orp_modules ### DEPRECIATED
+		install_custom_modules
 		update_versioning
 		modify_sudoers
 		install_logrotate_config

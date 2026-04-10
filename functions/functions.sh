@@ -566,6 +566,40 @@ function install_orp_modules {
 
 ################################################################################
 
+function install_custom_modules {
+	echo "--------------------------------------------------------------"
+	echo " Installing custom modules vendored in the ORP web UI fork"
+	echo "--------------------------------------------------------------"
+
+	# Modules that ship as a directory under $WWW_PATH/$GUI_NAME/modules/<Name>/
+	# with a svxlink/ subtree containing events.d/, modules.d/, and (optionally)
+	# sounds/en_US/ files. Each module's SVXLink-side files get installed into
+	# /usr/share/svxlink/{events.d,modules.d,sounds/en_US/<Name>}.
+
+	### RSSI module (Bob Iannucci, W6EI)
+	local RSSI_SRC="$WWW_PATH/$GUI_NAME/modules/RSSI/svxlink"
+	if [ -d "$RSSI_SRC" ]; then
+		cp "$RSSI_SRC/events.d/RSSI.tcl"        /usr/share/svxlink/events.d/RSSI.tcl
+		cp "$RSSI_SRC/modules.d/ModuleRSSI.tcl" /usr/share/svxlink/modules.d/ModuleRSSI.tcl
+		mkdir -p /usr/share/svxlink/sounds/en_US/RSSI
+		cp -R "$RSSI_SRC/sounds/en_US/." /usr/share/svxlink/sounds/en_US/RSSI/
+		chown -R www-data:www-data \
+			/usr/share/svxlink/events.d/RSSI.tcl \
+			/usr/share/svxlink/modules.d/ModuleRSSI.tcl \
+			/usr/share/svxlink/sounds/en_US/RSSI
+
+		# Register the module in the seed database (disabled by default, empty
+		# options). Bob's live-system DB backup already contains a populated
+		# RSSI row — this INSERT only affects fresh builds with no backup.
+		sqlite3 /var/lib/openrepeater/db/openrepeater.db \
+			"INSERT OR IGNORE INTO modules (moduleEnabled, svxlinkName, svxlinkID, moduleOptions) VALUES (0, 'RSSI', 3, '');"
+	else
+		echo "WARNING: RSSI module source not found at $RSSI_SRC"
+	fi
+}
+
+################################################################################
+
 function modify_sudoers {
 	echo "--------------------------------------------------------------"
 	echo " Setting up sudoers permissions for OpenRepeater"
