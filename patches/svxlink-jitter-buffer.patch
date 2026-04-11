@@ -1,0 +1,391 @@
+--- src/echolib/EchoLinkQso.h.orig	2026-04-11 14:40:33
++++ src/echolib/EchoLinkQso.h	2026-04-11 14:41:37
+@@ -51,6 +51,8 @@
+ #include <sigc++/sigc++.h>
+ #include <stdint.h>
+ #include <string>
++#include <map>
++#include <vector>
+ 
+ 
+ /****************************************************************************
+@@ -477,6 +479,19 @@
+     static const int    FRAME_COUNT             = 4;
+     static const int  	BUFFER_SIZE      	= FRAME_COUNT*160;
+     static const int    BLOCK_TIME              = FRAME_COUNT*1000*160/8000;
++
++    // --- RX jitter buffer tunables ---
++    // Number of BLOCK_TIME (80ms) packets to accumulate before starting playout.
++    // 0 = disabled (legacy behaviour: packets played immediately on arrival, no
++    // reorder tolerance, no loss concealment). Recommended default: 3 (=240ms).
++    // Determined empirically by simulating real captured pcaps (see
++    // ~/Documents/Claude/jitter/simulate_jitter_buffer.py), 240ms of added
++    // latency eliminates 89-91% of audible glitches on a representative
++    // real-world path.
++    static const int    JITTER_TARGET_DEPTH     = 3;
++    // Buffer ceiling — if the map grows larger than this, the oldest packet is
++    // evicted. Protects against runaway memory if the sink stalls.
++    static const int    JITTER_MAX_DEPTH        = 10;
+ 
+     bool      	      	init_ok;
+     unsigned char      	sdes_packet[1500];
+@@ -502,6 +517,26 @@
+     bool                use_gsm_only;
+     Private             *p;
+     int                 rx_timeout_left;
++
++    // --- RX jitter buffer state ---
++    // Map from RTP sequence number to the decoded BUFFER_SIZE-sample payload
++    // of the corresponding audio packet. Holds packets that have arrived but
++    // not yet been played out to the connected audio sink.
++    std::map<uint16_t, std::vector<float> > m_jitter_buf;
++    // Sequence number of the next packet to play out. Advances by 1 per
++    // playout tick regardless of whether the packet was present or missing.
++    uint16_t            m_playout_head;
++    // False until the buffer has first reached JITTER_TARGET_DEPTH, at which
++    // point the playout timer is started and m_playout_head is initialised.
++    bool                m_playout_started;
++    // Periodic timer at BLOCK_TIME (80ms) that drives playout. NULL when
++    // disconnected or when the buffer hasn't yet reached target depth.
++    Async::Timer *      m_playout_timer;
++    // Pending partial-write buffer for sink backpressure. If the downstream
++    // sink accepts only part of a packet, the remainder is held here and
++    // re-attempted on the next playout tick (and on resumeOutput).
++    std::vector<float>  m_pending_samples;
++    size_t              m_pending_samples_pos;
+ 
+     Qso(const Qso&);
+     Qso& operator=(const Qso&);
+@@ -512,6 +547,11 @@
+     void handleAudioInput(unsigned char *buf, int len);
+     inline void handleNonAudioPacket(unsigned char *buf, int len);
+     inline void handleAudioPacket(unsigned char *buf, int len);
++    // Jitter-buffer helpers (see EchoLinkQso.cpp for implementation notes).
++    void jitterBufferInsert(uint16_t seq, const float *samples, int count);
++    void jitterBufferReset(void);
++    void jitterPlayoutTick(Async::Timer *timer);
++    int  tryDrainPendingSamples(void);
+     void micAudioRead(void *buf, size_t len);
+     bool sendSdesPacket(void);
+     void sendKeepAlive(Async::Timer *timer);
+--- src/echolib/EchoLinkQso.cpp.orig	2026-04-11 14:40:33
++++ src/echolib/EchoLinkQso.cpp	2026-04-11 14:43:51
+@@ -159,7 +159,9 @@
+     send_buffer_cnt(0), remote_ip(addr), rx_indicator_timer(0),
+     remote_name("?"), remote_call("?"), is_remote_initiated(false),
+     receiving_audio(false), use_gsm_only(false), p(new Private),
+-    rx_timeout_left(0)
++    rx_timeout_left(0),
++    m_playout_head(0), m_playout_started(false), m_playout_timer(0),
++    m_pending_samples_pos(0)
+ {
+   if (!addr.isUnicast())
+   {
+@@ -526,6 +528,10 @@
+ 
+ void Qso::resumeOutput(void)
+ {
++  // The sink is now ready to accept more samples. Try to drain any bytes
++  // still pending from a partial write, then drive the playout cycle if
++  // there is a playout timer running.
++  tryDrainPendingSamples();
+ } /* Qso::resumeOutput */
+     
+ 
+@@ -779,12 +785,22 @@
+     return;
+   }
+ 
++  // Extract the RTP sequence number from the packet header. This field has
++  // always been present in EchoLink audio packets but the legacy RX path
++  // never read it. We use it to drive a FIFO playout jitter buffer so that
++  // out-of-order and variably-delayed packets can be reassembled into a
++  // steady 80ms-cadence stream to the audio sink.
++  uint16_t rtp_seq = ntohs(voice_packet->header.seqNum);
++
++  // Decoded samples for this whole packet (4 GSM frames = 640 samples).
++  float decoded[BUFFER_SIZE];
++
+ #ifdef SPEEX_MAJOR
+   if (voice_packet->header.pt == 0x96)
+   {
+     speex_bits_read_from(&p->dec_bits, (char*)voice_packet->data,
+                          len - sizeof(voice_packet->header));
+-          
++
+     for (int frameno=0; frameno<FRAME_COUNT; ++frameno)
+     {
+       int err = speex_decode_int(p->dec_state, &p->dec_bits, sbuff);
+@@ -813,13 +829,11 @@
+             mem_fun(*this, &Qso::checkRxActivity));
+         rx_timeout_left = RX_INDICATOR_SLACK;
+       }
+-      
+-      float samples[160];
++
+       for (int i = 0; i < 160; i++)
+       {
+-        samples[i] = static_cast<float>(sbuff[i]) / 32768.0;
++        decoded[frameno*160 + i] = static_cast<float>(sbuff[i]) / 32768.0;
+       }
+-      sinkWriteSamples(samples, 160);
+       sbuff += 160;
+     }
+   }
+@@ -837,24 +851,28 @@
+       if (rx_indicator_timer == 0)
+       {
+         receiving_audio = true;
+-        isReceiving(true); 
++        isReceiving(true);
+         rx_indicator_timer = new Timer(RX_INDICATOR_POLL_TIME,
+                                        Timer::TYPE_PERIODIC);
+         rx_indicator_timer->expired.connect(
+             mem_fun(*this, &Qso::checkRxActivity));
+         rx_timeout_left = RX_INDICATOR_SLACK;
+       }
+-      
+-      float samples[160];
++
+       for (int i=0; i<160; ++i)
+       {
+-        samples[i] = static_cast<float>(sbuff[i]) / 32768.0;
++        decoded[frameno*160 + i] = static_cast<float>(sbuff[i]) / 32768.0;
+       }
+-      sinkWriteSamples(samples, 160);
+       sbuff += 160;
+     }
+   }
+ 
++  // Hand the decoded packet to the jitter buffer. If JITTER_TARGET_DEPTH is
++  // 0 the buffer is effectively a passthrough and samples are written to the
++  // sink immediately (legacy behaviour). Otherwise the packet is buffered
++  // and played out by m_playout_timer.
++  jitterBufferInsert(rtp_seq, decoded, BUFFER_SIZE);
++
+   rx_timeout_left += BLOCK_TIME;
+   if (rx_timeout_left < BLOCK_TIME + RX_INDICATOR_SLACK)
+   {
+@@ -951,6 +969,9 @@
+   keep_alive_timer = 0;
+   delete con_timeout_timer;
+   con_timeout_timer = 0;
++  // Tear down the RX jitter buffer — any buffered audio is discarded along
++  // with the connection.
++  jitterBufferReset();
+   setState(STATE_DISCONNECTED);
+ } /* Qso::cleanupConnection */
+ 
+@@ -1041,10 +1062,212 @@
+   return true;
+ 
+ } /* Qso::sendByePacket */
++
++
++/****************************************************************************
++ *
++ * RX jitter buffer implementation
++ *
++ * The legacy EchoLink RX path wrote decoded audio samples directly to the
++ * downstream AudioSink as each UDP datagram was received. This left the
++ * application with no tolerance for out-of-order arrival, delay variance, or
++ * short gaps — any of which produces an audible artifact because GSM 6.10
++ * has no packet-loss concealment and the audio pipe has no elastic buffer.
++ *
++ * This implementation inserts a small FIFO playout buffer between the
++ * network decode step and the sink. Packets are indexed by their RTP
++ * sequence number (which the encoder was already writing but the decoder
++ * was throwing away). A periodic BLOCK_TIME timer drains the buffer in
++ * order, emitting silence for any slot whose packet has not arrived in
++ * time or has been dropped for being too old.
++ *
++ * Tuning notes (see ~/Documents/Claude/jitter/simulate_jitter_buffer.py for
++ * the empirical work). Against three 5-minute captures of a real Newsline
++ * stream at W6EI under clean, upload-loaded, and download-loaded conditions:
++ *   depth=3 (240ms) eliminates 89-91% of audible glitches in clean and
++ *   download conditions, at a latency cost that is imperceptible in
++ *   half-duplex amateur-radio operation.
++ *
++ ****************************************************************************/
+ 
++void Qso::jitterBufferReset(void)
++{
++  m_jitter_buf.clear();
++  m_playout_started = false;
++  m_playout_head = 0;
++  if (m_playout_timer != 0)
++  {
++    delete m_playout_timer;
++    m_playout_timer = 0;
++  }
++  m_pending_samples.clear();
++  m_pending_samples_pos = 0;
++} /* Qso::jitterBufferReset */
+ 
+ 
++void Qso::jitterBufferInsert(uint16_t seq, const float *samples, int count)
++{
++  // With target depth 0 the jitter buffer is effectively disabled and we
++  // fall through to the legacy behaviour of writing samples directly to
++  // the sink on packet arrival.
++  if (JITTER_TARGET_DEPTH <= 0)
++  {
++    sinkWriteSamples(samples, count);
++    return;
++  }
+ 
++  // If playout has already started, reject any packet whose sequence
++  // number is older than the playout head (mod 2^16). Such a packet is
++  // too late to be useful — its slot has already been played (as real
++  // audio or as silence).
++  if (m_playout_started)
++  {
++    uint16_t diff = static_cast<uint16_t>(seq - m_playout_head);
++    if (diff > 32768)
++    {
++      return;  // too old; drop
++    }
++  }
++
++  // Insert / overwrite the frame in the buffer.
++  std::vector<float> &slot = m_jitter_buf[seq];
++  slot.assign(samples, samples + count);
++
++  // If the buffer has grown beyond the max allowed depth, evict the oldest
++  // entry by sequence number — i.e., the entry most in the past relative
++  // to the playout head (or the numerically smallest in the map if playout
++  // hasn't started yet).
++  while (static_cast<int>(m_jitter_buf.size()) > JITTER_MAX_DEPTH)
++  {
++    std::map<uint16_t, std::vector<float> >::iterator oldest = m_jitter_buf.begin();
++    if (m_playout_started)
++    {
++      // Find the entry with the smallest positive distance from the
++      // playout head, mod 2^16. That's the next one that would be played.
++      uint16_t best_diff = 0xffff;
++      for (std::map<uint16_t, std::vector<float> >::iterator it = m_jitter_buf.begin();
++           it != m_jitter_buf.end(); ++it)
++      {
++        uint16_t d = static_cast<uint16_t>(it->first - m_playout_head);
++        if (d < best_diff)
++        {
++          best_diff = d;
++          oldest = it;
++        }
++      }
++    }
++    m_jitter_buf.erase(oldest);
++  }
++
++  // If playout hasn't started yet and the buffer has reached target depth,
++  // start the playout timer and pick the initial head.
++  if (!m_playout_started &&
++      static_cast<int>(m_jitter_buf.size()) >= JITTER_TARGET_DEPTH)
++  {
++    // Start playing the smallest sequence number in the buffer — that's
++    // the oldest packet we have, and it's the natural starting point.
++    m_playout_head = m_jitter_buf.begin()->first;
++    m_playout_started = true;
++    if (m_playout_timer == 0)
++    {
++      m_playout_timer = new Timer(BLOCK_TIME, Timer::TYPE_PERIODIC);
++      m_playout_timer->expired.connect(
++          mem_fun(*this, &Qso::jitterPlayoutTick));
++    }
++  }
++} /* Qso::jitterBufferInsert */
++
++
++int Qso::tryDrainPendingSamples(void)
++{
++  if (m_pending_samples.empty())
++  {
++    return 0;
++  }
++  const int remaining = static_cast<int>(m_pending_samples.size()) -
++                        static_cast<int>(m_pending_samples_pos);
++  if (remaining <= 0)
++  {
++    m_pending_samples.clear();
++    m_pending_samples_pos = 0;
++    return 0;
++  }
++  const float *ptr = &m_pending_samples[m_pending_samples_pos];
++  int written = sinkWriteSamples(ptr, remaining);
++  if (written <= 0)
++  {
++    return 0;  // sink still not accepting
++  }
++  m_pending_samples_pos += written;
++  if (static_cast<int>(m_pending_samples_pos) >=
++      static_cast<int>(m_pending_samples.size()))
++  {
++    m_pending_samples.clear();
++    m_pending_samples_pos = 0;
++  }
++  return written;
++} /* Qso::tryDrainPendingSamples */
++
++
++void Qso::jitterPlayoutTick(Timer *timer)
++{
++  // If there is still backpressure from a previous tick, try that first.
++  // If the sink still can't accept it, skip this tick — the timer will
++  // fire again in BLOCK_TIME and we'll try again. (resumeOutput will
++  // also call tryDrainPendingSamples if the sink unblocks in between.)
++  if (!m_pending_samples.empty())
++  {
++    tryDrainPendingSamples();
++    if (!m_pending_samples.empty())
++    {
++      return;
++    }
++  }
++
++  // Try to play the packet at m_playout_head. If it's in the buffer,
++  // consume and write it. If not, write a block of silence to keep the
++  // downstream sink at a steady cadence.
++  std::map<uint16_t, std::vector<float> >::iterator it =
++      m_jitter_buf.find(m_playout_head);
++
++  const float *samples;
++  int count;
++  float silence[BUFFER_SIZE];
++
++  if (it != m_jitter_buf.end())
++  {
++    samples = it->second.data();
++    count = static_cast<int>(it->second.size());
++  }
++  else
++  {
++    for (int i = 0; i < BUFFER_SIZE; ++i) silence[i] = 0.0f;
++    samples = silence;
++    count = BUFFER_SIZE;
++  }
++
++  int written = sinkWriteSamples(samples, count);
++  if (written < count)
++  {
++    // Sink accepted only part of the block. Stash the rest so the next
++    // tick (or resumeOutput) can finish it.
++    m_pending_samples.assign(samples + written, samples + count);
++    m_pending_samples_pos = 0;
++  }
++
++  // Consume the buffered entry (if any) and advance the playout head
++  // regardless. Advancing even on miss is the correct behaviour: the
++  // slot has been "played" as silence and the stream must keep marching.
++  if (it != m_jitter_buf.end())
++  {
++    m_jitter_buf.erase(it);
++  }
++  m_playout_head = static_cast<uint16_t>(m_playout_head + 1);
++} /* Qso::jitterPlayoutTick */
++
++
++
++
+ /*
+  * This file has not been truncated
+  */

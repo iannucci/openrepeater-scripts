@@ -4,8 +4,12 @@
 # DEFINE FUNCTIONS
 ################################################################################
 
+# Absolute path to the openrepeater-scripts repo root. Resolved at source time
+# so it stays correct after functions cd into /root or elsewhere. Used by
+# apply_svxlink_patches to locate patches/*.patch relative to the scripts dir.
+ORP_SCRIPTS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-		
+
 function check_root {
 	if [[ $EUID -ne 0 ]]; then
 		echo "--------------------------------------------------------------"
@@ -137,6 +141,39 @@ function set_hostname () {
 
 ################################################################################
 
+# Apply any patches under patches/*.patch in the openrepeater-scripts
+# repo to the current directory (which should be the root of an extracted
+# svxlink source tree). Patches are applied with -p0 so their paths must
+# be relative to the svxlink source root.
+#
+# Used by install_svxlink_source after the svxlink tarball is extracted or
+# the git clone completes, before cmake configures the build. See
+# patches/svxlink-jitter-buffer.patch for the one patch currently shipped.
+function apply_svxlink_patches {
+	echo "--------------------------------------------------------------"
+	echo " Applying ORP patches to svxlink source tree"
+	echo "--------------------------------------------------------------"
+	local patch_dir="$ORP_SCRIPTS_ROOT/patches"
+	if [ ! -d "$patch_dir" ]; then
+		echo "  No patches directory found at $patch_dir — skipping"
+		return 0
+	fi
+	local applied=0
+	for p in "$patch_dir"/*.patch; do
+		[ -f "$p" ] || continue
+		echo "  applying $(basename "$p")"
+		if ! patch -p0 < "$p"; then
+			echo "*** ERROR: failed to apply $(basename "$p")"
+			return 1
+		fi
+		applied=$((applied + 1))
+	done
+	echo "  $applied patch(es) applied successfully"
+	return 0
+}
+
+################################################################################
+
 function install_svxlink_source () {
 	echo "--------------------------------------------------------------"
 	echo " Compile/Install SVXLink from Source Code (ver $SVXLINK_VER)"
@@ -162,15 +199,19 @@ function install_svxlink_source () {
 		mkdir svxlink
 		cd svxlink
 		git clone https://github.com/sm0svx/svxlink.git
-		cd svxlink/src
+		cd svxlink
+		apply_svxlink_patches
+		cd src
 
 	else
 		echo "building svxlink from release version"
 		curl -Lo svxlink-source.tar.gz "https://github.com/sm0svx/svxlink/archive/$SVXLINK_VER.tar.gz"
 		tar xvzf svxlink-source.tar.gz
-		cd svxlink-$SVXLINK_VER/src
+		cd svxlink-$SVXLINK_VER
+		apply_svxlink_patches
+		cd src
 	fi
-	
+
 	# If Selected, enable the non-standard modules to be included in the build process
 	
 	echo "USE_CONTRIBS=$2"
