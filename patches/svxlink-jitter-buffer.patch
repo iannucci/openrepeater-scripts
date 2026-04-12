@@ -1,5 +1,5 @@
---- src/echolib/EchoLinkQso.h.orig	2026-04-11 14:40:33
-+++ src/echolib/EchoLinkQso.h	2026-04-11 14:41:37
+--- src/echolib/EchoLinkQso.h.orig
++++ src/echolib/EchoLinkQso.h
 @@ -51,6 +51,8 @@
  #include <sigc++/sigc++.h>
  #include <stdint.h>
@@ -9,11 +9,10 @@
  
  
  /****************************************************************************
-@@ -477,6 +479,19 @@
-     static const int    FRAME_COUNT             = 4;
+@@ -478,6 +480,23 @@
      static const int  	BUFFER_SIZE      	= FRAME_COUNT*160;
      static const int    BLOCK_TIME              = FRAME_COUNT*1000*160/8000;
-+
+ 
 +    // --- RX jitter buffer tunables ---
 +    // Number of BLOCK_TIME (80ms) packets to accumulate before starting playout.
 +    // 0 = disabled (legacy behaviour: packets played immediately on arrival, no
@@ -26,14 +25,18 @@
 +    // Buffer ceiling — if the map grows larger than this, the oldest packet is
 +    // evicted. Protects against runaway memory if the sink stalls.
 +    static const int    JITTER_MAX_DEPTH        = 10;
- 
++    // Number of consecutive silent playout ticks (BLOCK_TIME=80ms each)
++    // that must accumulate before concluding the sender has paused (vs
++    // normal network jitter) and resetting playout. 5 ticks = 400 ms.
++    static const int    JITTER_UNDERRUN_RESET_TICKS = 5;
++
      bool      	      	init_ok;
      unsigned char      	sdes_packet[1500];
-@@ -502,6 +517,26 @@
-     bool                use_gsm_only;
+     int       	      	sdes_length;
+@@ -503,6 +522,33 @@
      Private             *p;
      int                 rx_timeout_left;
-+
+ 
 +    // --- RX jitter buffer state ---
 +    // Map from RTP sequence number to the decoded BUFFER_SIZE-sample payload
 +    // of the corresponding audio packet. Holds packets that have arrived but
@@ -53,10 +56,18 @@
 +    // re-attempted on the next playout tick (and on resumeOutput).
 +    std::vector<float>  m_pending_samples;
 +    size_t              m_pending_samples_pos;
- 
++    // Number of consecutive silent playout ticks. Used to detect sender-
++    // initiated pauses (vs normal network jitter) and reset playout state
++    // so the next arriving packet can restart a fresh playout cycle at its
++    // own sequence number. Without this, m_playout_head drifts ahead of
++    // the sender during long pauses and all subsequent packets are rejected
++    // as too-old by jitterBufferInsert.
++    int                 m_silent_ticks;
++
      Qso(const Qso&);
      Qso& operator=(const Qso&);
-@@ -512,6 +547,11 @@
+     void printData(const unsigned char *buf, int len);
+@@ -512,6 +558,11 @@
      void handleAudioInput(unsigned char *buf, int len);
      inline void handleNonAudioPacket(unsigned char *buf, int len);
      inline void handleAudioPacket(unsigned char *buf, int len);
@@ -68,8 +79,8 @@
      void micAudioRead(void *buf, size_t len);
      bool sendSdesPacket(void);
      void sendKeepAlive(Async::Timer *timer);
---- src/echolib/EchoLinkQso.cpp.orig	2026-04-11 14:40:33
-+++ src/echolib/EchoLinkQso.cpp	2026-04-11 14:43:51
+--- src/echolib/EchoLinkQso.cpp.orig
++++ src/echolib/EchoLinkQso.cpp
 @@ -159,7 +159,9 @@
      send_buffer_cnt(0), remote_ip(addr), rx_indicator_timer(0),
      remote_name("?"), remote_call("?"), is_remote_initiated(false),
@@ -77,7 +88,7 @@
 -    rx_timeout_left(0)
 +    rx_timeout_left(0),
 +    m_playout_head(0), m_playout_started(false), m_playout_timer(0),
-+    m_pending_samples_pos(0)
++    m_pending_samples_pos(0), m_silent_ticks(0)
  {
    if (!addr.isUnicast())
    {
@@ -176,12 +187,10 @@
    setState(STATE_DISCONNECTED);
  } /* Qso::cleanupConnection */
  
-@@ -1041,10 +1062,212 @@
-   return true;
- 
+@@ -1043,6 +1064,246 @@
  } /* Qso::sendByePacket */
-+
-+
+ 
+ 
 +/****************************************************************************
 + *
 + * RX jitter buffer implementation
@@ -207,7 +216,7 @@
 + *   half-duplex amateur-radio operation.
 + *
 + ****************************************************************************/
- 
++
 +void Qso::jitterBufferReset(void)
 +{
 +  m_jitter_buf.clear();
@@ -220,9 +229,10 @@
 +  }
 +  m_pending_samples.clear();
 +  m_pending_samples_pos = 0;
++  m_silent_ticks = 0;
 +} /* Qso::jitterBufferReset */
- 
- 
++
++
 +void Qso::jitterBufferInsert(uint16_t seq, const float *samples, int count)
 +{
 +  // With target depth 0 the jitter buffer is effectively disabled and we
@@ -233,7 +243,7 @@
 +    sinkWriteSamples(samples, count);
 +    return;
 +  }
- 
++
 +  // If playout has already started, reject any packet whose sequence
 +  // number is older than the playout head (mod 2^16). Such a packet is
 +  // too late to be useful — its slot has already been played (as real
@@ -329,6 +339,15 @@
 +
 +void Qso::jitterPlayoutTick(Timer *timer)
 +{
++  // Guard against firing after a soft reset (underrun pause). The timer
++  // keeps running but jitterBufferReset does not delete it from inside
++  // this callback to avoid use-after-free. The tick becomes a no-op
++  // until jitterBufferInsert re-accumulates JITTER_TARGET_DEPTH packets
++  // and sets m_playout_started back to true.
++  if (!m_playout_started)
++  {
++    return;
++  }
 +  // If there is still backpressure from a previous tick, try that first.
 +  // If the sink still can't accept it, skip this tick — the timer will
 +  // fire again in BLOCK_TIME and we'll try again. (resumeOutput will
@@ -356,9 +375,35 @@
 +  {
 +    samples = it->second.data();
 +    count = static_cast<int>(it->second.size());
++    m_silent_ticks = 0;
 +  }
 +  else
 +  {
++    // Underrun. If we have been silent for long enough to conclude this is
++    // a sender-initiated pause rather than network jitter, reset playout
++    // state and stop emitting anything. The next arriving packet will
++    // restart playout fresh at its own sequence number via the normal
++    // JITTER_TARGET_DEPTH accumulation path in jitterBufferInsert.
++    // This is critical: without it, m_playout_head advances unbounded
++    // during the pause and every subsequent real packet is rejected as
++    // too-old by jitterBufferInsert, producing permanent dead air.
++    if (++m_silent_ticks >= JITTER_UNDERRUN_RESET_TICKS)
++    {
++      // Soft reset: clear the buffer and go back to the pre-playout
++      // state. The periodic timer keeps running but becomes a no-op via
++      // the !m_playout_started guard at the top of this function. The
++      // first packet arriving after this point will re-accumulate the
++      // buffer to JITTER_TARGET_DEPTH and jitterBufferInsert will flip
++      // m_playout_started back to true with m_playout_head anchored to
++      // whatever the fresh sender sequence is. Critically we do NOT
++      // delete m_playout_timer here because we are inside its own
++      // callback and freeing it would be a use-after-free.
++      m_jitter_buf.clear();
++      m_playout_started = false;
++      m_silent_ticks = 0;
++      m_playout_head = 0;
++      return;
++    }
 +    for (int i = 0; i < BUFFER_SIZE; ++i) silence[i] = 0.0f;
 +    samples = silence;
 +    count = BUFFER_SIZE;
@@ -374,8 +419,10 @@
 +  }
 +
 +  // Consume the buffered entry (if any) and advance the playout head
-+  // regardless. Advancing even on miss is the correct behaviour: the
-+  // slot has been "played" as silence and the stream must keep marching.
++  // regardless. Advancing even on miss is the correct behaviour during
++  // short underruns (network jitter) — the slot has been played as
++  // silence and the stream keeps marching. Long underruns are caught
++  // by the JITTER_UNDERRUN_RESET_TICKS check above.
 +  if (it != m_jitter_buf.end())
 +  {
 +    m_jitter_buf.erase(it);
@@ -384,8 +431,6 @@
 +} /* Qso::jitterPlayoutTick */
 +
 +
-+
-+
+ 
+ 
  /*
-  * This file has not been truncated
-  */
