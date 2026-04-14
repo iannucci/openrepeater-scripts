@@ -174,6 +174,46 @@ function apply_svxlink_patches {
 
 ################################################################################
 
+# Assert that both ORP patches (diag-logging + jitter-buffer) survived the
+# svxlink build. Called from install_svxlink_source after `make install`.
+# Exits non-zero on failure so a partially-patched install can't complete.
+function verify_svxlink_patches {
+	echo "--------------------------------------------------------------"
+	echo " Verifying ORP patches present in installed svxlink binaries"
+	echo "--------------------------------------------------------------"
+	local libdir; libdir="$(dirname "$(ldconfig -p | awk '/libecholib/{print $NF;exit}')")"
+	local echolib; echolib=$(ls "$libdir"/libecholib.so.*.*.* 2>/dev/null | head -1)
+	local ok=1
+
+	# Diag-logging patch: four log strings added in Squelch/LocalTx/
+	# RepeaterLogic/Logic. Check one representative string from each file.
+	for marker in \
+		'Squelch detector transition' \
+		'Squelch (post-debounce)' \
+		'Tx control mode set to' \
+		'processCommand('; do
+		if ! strings /usr/bin/svxlink | grep -qF "$marker"; then
+			echo "*** MISSING diag-logging marker: $marker"
+			ok=0
+		fi
+	done
+
+	# Jitter-buffer patch: new methods on EchoLink::Qso.
+	if [ -z "$echolib" ] || ! nm -D "$echolib" 2>/dev/null | grep -q jitterBufferInsert; then
+		echo "*** MISSING jitter-buffer symbol: jitterBufferInsert in ${echolib:-libecholib}"
+		ok=0
+	fi
+
+	if [ "$ok" -ne 1 ]; then
+		echo "*** ERROR: svxlink build is missing required ORP patches."
+		echo "*** The bench must be remotely diagnosable — refusing to continue."
+		exit 1
+	fi
+	echo "  OK — diag-logging and jitter-buffer patches both present"
+}
+
+################################################################################
+
 function install_svxlink_source () {
 	echo "--------------------------------------------------------------"
 	echo " Compile/Install SVXLink from Source Code (ver $SVXLINK_VER)"
@@ -233,6 +273,14 @@ function install_svxlink_source () {
 
 	make install
 	ldconfig
+
+	# Verify BOTH ORP patches made it into the installed binaries. If either
+	# is missing the build is a silent regression — the bench is supposed to
+	# be remotely diagnosable, and losing these patches hides all squelch /
+	# PTT transitions and the EchoLink jitter buffer. Fail the install loudly
+	# rather than produce a half-patched system that looks fine until you
+	# try to debug it.
+	verify_svxlink_patches
 
  	# Enable/Disable Services
 	systemctl enable svxlink
