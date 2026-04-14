@@ -124,6 +124,10 @@ Run script and output to log file
 	
 	# need some asound.conf tweaks to keep the channels seperated
 	set_ics_asound
+
+	# Unmute Fe-Pi Lineout (muted by default) and persist via alsactl.
+	# The ICS HAT taps Lineout, so without this the repeater is silent.
+	set_ics_mixer
 	
 	### OPEN REPEATER FUCNTIONS ###
 	if [ $INPUT_INSTALL_TYPE = "ORP" ]; then

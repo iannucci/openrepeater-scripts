@@ -69,3 +69,15 @@ pcm.!default {
 }
 DELIM
 }
+
+
+# Fe-Pi Lineout is muted by default on a fresh install. The ICS HAT taps
+# Lineout (not Headphone) for its audio input, so without this the repeater
+# is silent on-air despite svxlink running fine. Unmute, set a sane level,
+# and persist via alsactl so it survives reboot.
+function set_ics_mixer {
+	amixer -c 0 sset Lineout on        >/dev/null 2>&1 || true
+	amixer -c 0 sset Lineout 18        >/dev/null 2>&1 || true   # ~58% / -6.5 dB
+	amixer -c 0 sset Headphone 63      >/dev/null 2>&1 || true   # 50%, not used by HAT
+	alsactl store 0                    >/dev/null 2>&1 || true
+}
