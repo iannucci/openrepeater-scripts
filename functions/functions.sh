@@ -204,6 +204,19 @@ function verify_svxlink_patches {
 		ok=0
 	fi
 
+	# Jitter-buffer logging patch: runtime log strings for playout start,
+	# periodic tick summary, underrun reset, session summary.
+	for marker in \
+		'EchoLink JB: playout started' \
+		'EchoLink JB: tick' \
+		'EchoLink JB: underrun reset' \
+		'EchoLink JB: session summary'; do
+		if [ -z "$echolib" ] || ! strings "$echolib" 2>/dev/null | grep -qF "$marker"; then
+			echo "*** MISSING jitter-buffer-logging marker: $marker"
+			ok=0
+		fi
+	done
+
 	if [ "$ok" -ne 1 ]; then
 		echo "*** ERROR: svxlink build is missing required ORP patches."
 		echo "*** The bench must be remotely diagnosable — refusing to continue."

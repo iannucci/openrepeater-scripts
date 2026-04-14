@@ -1,0 +1,166 @@
+--- src/echolib/EchoLinkQso.h
++++ src/echolib/EchoLinkQso.h
+@@ -549,6 +549,20 @@
+     // as too-old by jitterBufferInsert.
+     int                 m_silent_ticks;
+ 
++    // --- RX jitter buffer diagnostics ---
++    // Counters reset at each jitterBufferReset(), dumped on reset and every
++    // ~5 seconds via jitterPlayoutTick. Intent: minimum-cost runtime
++    // visibility into jitter-buffer behaviour for remote debugging of the
++    // W6EI repeater. See ~/Documents/github/aredn-network-analysis/docs/
++    // plans/04-svxlink-log-diagnostics-proposal.md for the larger plan.
++    uint32_t            m_stats_inserts;
++    uint32_t            m_stats_drops_too_old;
++    uint32_t            m_stats_drops_overflow;
++    uint32_t            m_stats_playout_real;
++    uint32_t            m_stats_playout_silence;
++    int                 m_stats_max_depth;
++    int                 m_stats_summary_ticks;
++
+     Qso(const Qso&);
+     Qso& operator=(const Qso&);
+     void printData(const unsigned char *buf, int len);
+--- src/echolib/EchoLinkQso.cpp
++++ src/echolib/EchoLinkQso.cpp
+@@ -161,7 +161,10 @@
+     receiving_audio(false), use_gsm_only(false), p(new Private),
+     rx_timeout_left(0),
+     m_playout_head(0), m_playout_started(false), m_playout_timer(0),
+-    m_pending_samples_pos(0), m_silent_ticks(0)
++    m_pending_samples_pos(0), m_silent_ticks(0),
++    m_stats_inserts(0), m_stats_drops_too_old(0), m_stats_drops_overflow(0),
++    m_stats_playout_real(0), m_stats_playout_silence(0),
++    m_stats_max_depth(0), m_stats_summary_ticks(0)
+ {
+   if (!addr.isUnicast())
+   {
+@@ -1092,6 +1095,21 @@
+ 
+ void Qso::jitterBufferReset(void)
+ {
++  // Dump a session summary if this reset is closing a non-empty cycle.
++  // Printed from here so both disconnect-time and underrun-time resets get
++  // visibility; the underrun soft-reset path in jitterPlayoutTick does not
++  // call this function but does its own cleanup inline.
++  if (m_stats_inserts > 0 || m_stats_playout_real > 0)
++  {
++    std::cout << "EchoLink JB: session summary — "
++              << "inserts=" << m_stats_inserts
++              << " real=" << m_stats_playout_real
++              << " silence=" << m_stats_playout_silence
++              << " drops_old=" << m_stats_drops_too_old
++              << " drops_overflow=" << m_stats_drops_overflow
++              << " max_depth=" << m_stats_max_depth
++              << std::endl;
++  }
+   m_jitter_buf.clear();
+   m_playout_started = false;
+   m_playout_head = 0;
+@@ -1103,6 +1121,13 @@
+   m_pending_samples.clear();
+   m_pending_samples_pos = 0;
+   m_silent_ticks = 0;
++  m_stats_inserts = 0;
++  m_stats_drops_too_old = 0;
++  m_stats_drops_overflow = 0;
++  m_stats_playout_real = 0;
++  m_stats_playout_silence = 0;
++  m_stats_max_depth = 0;
++  m_stats_summary_ticks = 0;
+ } /* Qso::jitterBufferReset */
+ 
+ 
+@@ -1126,6 +1151,7 @@
+     uint16_t diff = static_cast<uint16_t>(seq - m_playout_head);
+     if (diff > 32768)
+     {
++      ++m_stats_drops_too_old;
+       return;  // too old; drop
+     }
+   }
+@@ -1133,6 +1159,11 @@
+   // Insert / overwrite the frame in the buffer.
+   std::vector<float> &slot = m_jitter_buf[seq];
+   slot.assign(samples, samples + count);
++  ++m_stats_inserts;
++  if (static_cast<int>(m_jitter_buf.size()) > m_stats_max_depth)
++  {
++    m_stats_max_depth = static_cast<int>(m_jitter_buf.size());
++  }
+ 
+   // If the buffer has grown beyond the max allowed depth, evict the oldest
+   // entry by sequence number — i.e., the entry most in the past relative
+@@ -1158,6 +1189,7 @@
+       }
+     }
+     m_jitter_buf.erase(oldest);
++    ++m_stats_drops_overflow;
+   }
+ 
+   // If playout hasn't started yet and the buffer has reached target depth,
+@@ -1169,6 +1201,8 @@
+     // the oldest packet we have, and it's the natural starting point.
+     m_playout_head = m_jitter_buf.begin()->first;
+     m_playout_started = true;
++    std::cout << "EchoLink JB: playout started head=" << m_playout_head
++              << " depth=" << m_jitter_buf.size() << std::endl;
+     if (m_playout_timer == 0)
+     {
+       m_playout_timer = new Timer(BLOCK_TIME, Timer::TYPE_PERIODIC);
+@@ -1249,6 +1283,7 @@
+     samples = it->second.data();
+     count = static_cast<int>(it->second.size());
+     m_silent_ticks = 0;
++    ++m_stats_playout_real;
+   }
+   else
+   {
+@@ -1271,15 +1306,47 @@
+       // whatever the fresh sender sequence is. Critically we do NOT
+       // delete m_playout_timer here because we are inside its own
+       // callback and freeing it would be a use-after-free.
++      std::cout << "EchoLink JB: underrun reset after "
++                << JITTER_UNDERRUN_RESET_TICKS
++                << " silent ticks — inserts=" << m_stats_inserts
++                << " real=" << m_stats_playout_real
++                << " silence=" << m_stats_playout_silence
++                << " drops_old=" << m_stats_drops_too_old
++                << " drops_overflow=" << m_stats_drops_overflow
++                << " max_depth=" << m_stats_max_depth
++                << std::endl;
+       m_jitter_buf.clear();
+       m_playout_started = false;
+       m_silent_ticks = 0;
+       m_playout_head = 0;
++      // Reset counters too so the next playout cycle logs cleanly.
++      m_stats_inserts = 0;
++      m_stats_drops_too_old = 0;
++      m_stats_drops_overflow = 0;
++      m_stats_playout_real = 0;
++      m_stats_playout_silence = 0;
++      m_stats_max_depth = 0;
++      m_stats_summary_ticks = 0;
+       return;
+     }
+     for (int i = 0; i < BUFFER_SIZE; ++i) silence[i] = 0.0f;
+     samples = silence;
+     count = BUFFER_SIZE;
++    ++m_stats_playout_silence;
++  }
++
++  // Periodic summary every ~5 seconds of active playout. 62 * 80ms = 4.96s.
++  if (++m_stats_summary_ticks >= 62)
++  {
++    m_stats_summary_ticks = 0;
++    std::cout << "EchoLink JB: tick — inserts=" << m_stats_inserts
++              << " real=" << m_stats_playout_real
++              << " silence=" << m_stats_playout_silence
++              << " drops_old=" << m_stats_drops_too_old
++              << " drops_overflow=" << m_stats_drops_overflow
++              << " depth=" << m_jitter_buf.size()
++              << " max_depth=" << m_stats_max_depth
++              << std::endl;
+   }
+ 
+   int written = sinkWriteSamples(samples, count);
