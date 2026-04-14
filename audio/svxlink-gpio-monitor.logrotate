@@ -1,0 +1,12 @@
+# /etc/logrotate.d/svxlink-gpio-monitor
+/var/log/svxlink-gpio-monitor.jsonl {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+    postrotate
+        /bin/kill -HUP $(pgrep -f svxlink-gpio-monitor.py) 2>/dev/null || true
+    endscript
+}

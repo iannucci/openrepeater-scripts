@@ -1,0 +1,26 @@
+# /etc/systemd/system/svxlink-gpio-monitor.service
+#
+# Edge-triggered observability of the RX squelch GPIO pin.
+# Uses kernel sysfs GPIO edge notification (POLLPRI) to detect
+# every transition with sub-millisecond latency. Compare its log
+# against /var/log/svxlink to find edges svxlink missed.
+
+[Unit]
+Description=SVXLink RX squelch GPIO edge monitor
+Documentation=https://github.com/iannucci/aredn-network-analysis
+After=svxlink.service
+PartOf=svxlink.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/svxlink-gpio-monitor.py
+Restart=always
+RestartSec=10
+Nice=10
+IOSchedulingClass=idle
+User=root
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -703,7 +703,7 @@ function install_svxlink_audio_observability {
 	install -m 0755 "$ORP_SCRIPTS_ROOT/audio/svxlink-audio-report.py" \
 		/usr/local/bin/svxlink-audio-report
 
-	# 4. Logrotate config
+	# 4. Logrotate config for the audio monitor
 	install -m 0644 "$ORP_SCRIPTS_ROOT/audio/svxlink-audio-monitor.logrotate" \
 		/etc/logrotate.d/svxlink-audio-monitor
 
@@ -711,14 +711,36 @@ function install_svxlink_audio_observability {
 	touch /var/log/svxlink-audio-monitor.jsonl
 	chmod 0644 /var/log/svxlink-audio-monitor.jsonl
 
-	# Pick up the unit changes and the new monitor unit
+	# 5. GPIO squelch edge monitor — independent edge-triggered
+	#    observability of the RX squelch GPIO pin. Hunts the
+	#    "user keys up but repeater doesn't respond" failure mode
+	#    by detecting GPIO edges the kernel signals via sysfs
+	#    POLLPRI (microsecond latency), vs svxlink's own 100 ms
+	#    polled reader which can miss edges when its single thread
+	#    stalls. Correlate the two logs with svxlink-gpio-vs-log.
+	install -m 0755 "$ORP_SCRIPTS_ROOT/audio/svxlink-gpio-monitor.py" \
+		/usr/local/bin/svxlink-gpio-monitor.py
+	install -m 0755 "$ORP_SCRIPTS_ROOT/audio/svxlink-gpio-vs-log.py" \
+		/usr/local/bin/svxlink-gpio-vs-log
+	install -m 0644 "$ORP_SCRIPTS_ROOT/audio/svxlink-gpio-monitor.service" \
+		/etc/systemd/system/svxlink-gpio-monitor.service
+	install -m 0644 "$ORP_SCRIPTS_ROOT/audio/svxlink-gpio-monitor.logrotate" \
+		/etc/logrotate.d/svxlink-gpio-monitor
+	touch /var/log/svxlink-gpio-monitor.jsonl
+	chmod 0644 /var/log/svxlink-gpio-monitor.jsonl
+
+	# Pick up the unit changes and enable the new monitor units
 	systemctl daemon-reload
 	systemctl enable svxlink-audio-monitor.service
+	systemctl enable svxlink-gpio-monitor.service
 
 	echo "  installed: svxlink RT priority drop-in"
 	echo "  installed: svxlink-audio-monitor.service (will start at boot)"
 	echo "  installed: svxlink-audio-report (CLI summarizer)"
+	echo "  installed: svxlink-gpio-monitor.service (will start at boot)"
+	echo "  installed: svxlink-gpio-vs-log (GPIO vs svxlink-log correlator)"
 	echo "  installed: /etc/logrotate.d/svxlink-audio-monitor"
+	echo "  installed: /etc/logrotate.d/svxlink-gpio-monitor"
 }
 
 ################################################################################
