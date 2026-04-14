@@ -5,18 +5,28 @@ svxlink-audio-monitor — passive ALSA observability daemon.
 Watches /proc/asound/card0/pcm0p (TX) and /proc/asound/card0/pcm0c (RX) at
 200 Hz and writes a JSONL event log when something interesting happens:
 
-  tx_open        — TX playback substream entered RUNNING (= TX keyup)
-  tx_close       — TX playback substream left RUNNING (= TX dekey)
-  tx_xrun_real   — TX playback transitioned RUNNING -> XRUN with avail_max>0
-                   (= real audible underrun: D/A starved of samples)
-  tx_xrun_idle   — TX playback transitioned to XRUN with avail_max==0
-                   (= substream parked because no audio to send; not audible)
-  rx_xrun        — RX capture transitioned RUNNING -> XRUN
-                   (= real A/D overrun: capture buffer overflowed)
-  tx_near_under  — TX playback avail crossed BUFSIZE - PERIOD threshold
-                   while still RUNNING (warning: getting close to underrun)
-  rx_near_over   — RX capture avail crossed BUFSIZE - PERIOD threshold
-                   (warning: getting close to overrun)
+  tx_open            — TX playback substream entered RUNNING (= TX keyup)
+  tx_close           — TX playback substream left RUNNING/XRUN (= TX dekey)
+  tx_xrun_real_mid   — TX buffer drained mid-transmission AND svxlink
+                        resumed feeding within 500 ms. Audible underrun.
+  tx_xrun_tail       — TX buffer drained and svxlink never resumed within
+                        500 ms (= normal end-of-transmission drainout
+                        during PTT hangtime; not audible).
+  tx_xrun_idle       — TX transitioned to XRUN with buffer never having been
+                        active (= substream bookkeeping; not audible).
+  rx_xrun            — RX capture transitioned RUNNING -> XRUN
+                        (= real A/D overrun: capture buffer overflowed).
+  tx_near_under      — TX avail crossed BUFSIZE - PERIOD threshold while
+                        still RUNNING (warning: getting close to underrun).
+  rx_near_over       — RX avail crossed BUFSIZE - PERIOD threshold
+                        (warning: getting close to overrun).
+
+The mid vs tail distinction is critical: overnight on W6EI, *every*
+scheduled CW/voice ID produces an XRUN at the natural end of the tone
+when svxlink stops writing — these are inaudible and must not be
+mistaken for glitches. An audible glitch is one where svxlink wanted
+to keep feeding audio but fell behind; the buffer drained; and audio
+resumed (buffer refilled) within a short window after.
 
 Each emitted record is one JSON object on its own line, including up to
 1 second (200 samples) of context leading up to the event.
@@ -45,6 +55,9 @@ CTX_LEN   = 200                # 1 s of context kept in a ring buffer
 BUFSIZE   = 4096               # ALSA hw_params buffer_size (frames)
 PERIOD    = 1024               # ALSA hw_params period_size  (frames)
 NEAR_THR  = BUFSIZE - PERIOD   # 3072: threshold for "near underrun/overrun"
+XRUN_CLASSIFY_MS = 500         # window in which audio must resume to count
+                               # as a real mid-transmission glitch. Longer
+                               # than any svxlink hangtime we'd care about.
 
 
 def parse(text):
@@ -125,6 +138,25 @@ def main():
     # Per-session stats accumulator
     session = None  # dict opened on tx_open, emitted on tx_close
 
+    # Deferred XRUN classification: when buffer drains during an active TX
+    # session, we don't know yet whether it's a mid-transmission glitch
+    # (audio will resume) or an end-of-transmission tail (audio stopped
+    # for good). Buffer the event and wait XRUN_CLASSIFY_MS to decide.
+    pending_xrun = None  # dict: ts, trigger_sample, ctx_at_emit, prev_avail, prev_avail_max
+
+    def flush_pending_as_tail():
+        """Called when the pending window expires without recovery."""
+        nonlocal pending_xrun
+        if pending_xrun is None:
+            return
+        emit(fp, "tx_xrun_tail",
+             pending_xrun["trigger_sample"],
+             pending_xrun["ctx_at_emit"],
+             prev_avail=pending_xrun["prev_avail"],
+             prev_avail_max=pending_xrun["prev_avail_max"],
+             elapsed_ms=round((time.time() - pending_xrun["ts"]) * 1000, 1))
+        pending_xrun = None
+
     while True:
         s = sample()
         if s is None:
@@ -138,27 +170,70 @@ def main():
             ps_prev = prev[1]
             cs_prev = prev[4]
 
+            # --- Deferred XRUN classification ---
+            if pending_xrun is not None:
+                elapsed = ts - pending_xrun["ts"]
+                # Condition for "real mid-transmission glitch": buffer is
+                # refilling. avail dropping below BUFSIZE while state is
+                # RUNNING means new samples are being written. State can
+                # also pop back to RUNNING with avail < BUFSIZE.
+                if ps == "RUNNING" and pa < BUFSIZE:
+                    emit(fp, "tx_xrun_real_mid",
+                         pending_xrun["trigger_sample"],
+                         pending_xrun["ctx_at_emit"],
+                         prev_avail=pending_xrun["prev_avail"],
+                         prev_avail_max=pending_xrun["prev_avail_max"],
+                         recovery_ms=round(elapsed * 1000, 1),
+                         recovery_avail=pa)
+                    if session is not None:
+                        session["xruns"] = session.get("xruns", 0) + 1
+                    pending_xrun = None
+                elif elapsed * 1000 >= XRUN_CLASSIFY_MS:
+                    # Timed out without recovery — benign tail
+                    emit(fp, "tx_xrun_tail",
+                         pending_xrun["trigger_sample"],
+                         pending_xrun["ctx_at_emit"],
+                         prev_avail=pending_xrun["prev_avail"],
+                         prev_avail_max=pending_xrun["prev_avail_max"],
+                         elapsed_ms=round(elapsed * 1000, 1))
+                    pending_xrun = None
+
             # --- TX (playback) state transitions ---
+            # Consider both RUNNING and XRUN as "active" session states so
+            # tx_close fires on the RUNNING/XRUN -> anything-else boundary.
+            active_prev = ps_prev in ("RUNNING", "XRUN")
+            active_now  = ps     in ("RUNNING", "XRUN")
+
             if ps_prev != ps:
                 if ps == "RUNNING" and ps_prev != "RUNNING":
-                    # Keyup
-                    session = {"start_ts": ts, "samples": 0, "near_under": 0,
-                               "max_avail": 0}
-                    emit(fp, "tx_open", s, list(ctx), prev_state=ps_prev)
+                    # Keyup (from XRUN-idle or from not-open)
+                    if ps_prev != "XRUN" or session is None:
+                        session = {"start_ts": ts, "samples": 0,
+                                   "near_under": 0, "max_avail": 0}
+                        emit(fp, "tx_open", s, list(ctx), prev_state=ps_prev)
                 elif ps_prev == "RUNNING" and ps == "XRUN":
                     if pm > 0 and prev[2] < BUFSIZE:
-                        # Real audible underrun: was actively buffered, now empty
-                        emit(fp, "tx_xrun_real", s, list(ctx),
-                             prev_avail=prev[2], prev_avail_max=prev[3])
-                        if session is not None:
-                            session.setdefault("xruns", 0)
-                            session["xruns"] += 1
+                        # XRUN while buffer was previously active — defer
+                        # classification until we see whether audio resumes
+                        pending_xrun = {
+                            "ts": ts,
+                            "trigger_sample": s,
+                            "ctx_at_emit": list(ctx),
+                            "prev_avail": prev[2],
+                            "prev_avail_max": prev[3],
+                        }
                     else:
-                        # Substream parked / no buffered data: not audible
+                        # Substream parked / buffer never active
                         emit(fp, "tx_xrun_idle", s, list(ctx),
                              prev_avail=prev[2])
-                elif ps_prev == "RUNNING" and ps != "RUNNING" and ps != "XRUN":
-                    emit(fp, "tx_close", s, list(ctx), prev_state=ps_prev)
+                elif active_prev and not active_now:
+                    # Leaving active states (RUNNING or XRUN) to something
+                    # else (OPEN, SETUP, PREPARED, etc.) = end of TX session
+                    if pending_xrun is not None:
+                        # Outstanding XRUN never recovered — flush as tail
+                        flush_pending_as_tail()
+                    emit(fp, "tx_close", s, list(ctx),
+                         prev_state=ps_prev)
                     if session is not None:
                         session["end_ts"] = ts
                         session["duration_s"] = round(ts - session["start_ts"], 3)

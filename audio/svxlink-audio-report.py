@@ -79,10 +79,12 @@ def main():
     types = Counter(r["type"] for r in records)
     print("=== Event totals ===")
     for k in ["tx_open", "tx_close", "tx_session_summary",
-              "tx_xrun_real", "tx_xrun_idle", "rx_xrun",
-              "tx_near_under", "rx_near_over"]:
+              "tx_xrun_real_mid", "tx_xrun_tail", "tx_xrun_idle",
+              "rx_xrun", "tx_near_under", "rx_near_over"]:
         if types[k]:
-            print(f"  {k:22s} {types[k]}")
+            tag = " ← AUDIBLE GLITCH" if k == "tx_xrun_real_mid" else \
+                  " (benign end-of-TX drainout)" if k == "tx_xrun_tail" else ""
+            print(f"  {k:22s} {types[k]}{tag}")
     print()
 
     # Per-hour bins
@@ -91,10 +93,10 @@ def main():
     for r in records:
         h = datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d %H")
         by_hour[h][r["type"]] += 1
-    print(f"  {'hour':17s}  {'tx_open':>7s}  {'xrun':>5s}  {'near_under':>10s}  {'rx_xrun':>7s}  {'near_over':>9s}")
+    print(f"  {'hour':17s}  {'tx_open':>7s}  {'GLITCH':>6s}  {'tail':>5s}  {'near':>5s}  {'rx_xrun':>7s}")
     for h in sorted(by_hour):
         c = by_hour[h]
-        print(f"  {h:17s}  {c['tx_open']:>7d}  {c['tx_xrun_real']:>5d}  {c['tx_near_under']:>10d}  {c['rx_xrun']:>7d}  {c['rx_near_over']:>9d}")
+        print(f"  {h:17s}  {c['tx_open']:>7d}  {c['tx_xrun_real_mid']:>6d}  {c['tx_xrun_tail']:>5d}  {c['tx_near_under']:>5d}  {c['rx_xrun']:>7d}")
     print()
 
     # Per-session glitch rates
@@ -122,8 +124,10 @@ def main():
         for r in records:
             t = datetime.fromtimestamp(r["ts"]).strftime("%H:%M:%S.%f")[:-3]
             extra = ""
-            if r["type"] == "tx_xrun_real":
-                extra = f" prev_avail={r.get('prev_avail')} prev_avail_max={r.get('prev_avail_max')}"
+            if r["type"] == "tx_xrun_real_mid":
+                extra = f" recovery_ms={r.get('recovery_ms')} recovery_avail={r.get('recovery_avail')}"
+            elif r["type"] == "tx_xrun_tail":
+                extra = f" elapsed_ms={r.get('elapsed_ms')}"
             print(f"  {t}  {r['type']:18s}  tx={r['tx_state']}/{r['tx_avail']}/{r['tx_avail_max']}  rx={r['rx_state']}/{r['rx_avail']}/{r['rx_avail_max']}{extra}")
 
 
