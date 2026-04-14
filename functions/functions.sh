@@ -493,6 +493,26 @@ function install_orp_from_github {
 	cd $WWW_PATH
 	git clone -b 2.1.3-bookworm --single-branch https://github.com/iannucci/openrepeater.git $WWW_PATH/$GUI_NAME
 
+	# Layer 1 (always): stamp the deployed-commit short SHA into .git-sha
+	# so the footer can display it. Captured NOW, before the .git/ tree
+	# may be removed below in the NORMAL branch.
+	( cd "$WWW_PATH/$GUI_NAME" && \
+	  git rev-parse --short HEAD > .git-sha && \
+	  chmod 0644 .git-sha )
+
+	# Layer 2 (dev only): install git hooks that refresh .git-sha after any
+	# subsequent local git pull / checkout. In NORMAL mode .git/ is removed
+	# below, so hooks would be wiped — use the build-time stamp from Layer 1.
+	if [ "$ORP_FILE_LOCATIONS" = "dev" ]; then
+		for h in post-merge post-checkout; do
+			cat > "$WWW_PATH/$GUI_NAME/.git/hooks/$h" <<'HOOK'
+#!/bin/sh
+git rev-parse --short HEAD > .git-sha
+HOOK
+			chmod 0755 "$WWW_PATH/$GUI_NAME/.git/hooks/$h"
+		done
+	fi
+
 	if [ $ORP_FILE_LOCATIONS = "dev" ]; then
 		#######################################################################
 		# DEVELOPER SETUP: LINK FILES INTO PLACE FOR GITHUB SYNC
