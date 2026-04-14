@@ -1,0 +1,31 @@
+# /etc/systemd/system/svxlink-audio-monitor.service
+#
+# Always-on observability for the svxlink ALSA audio path.
+# Reads /proc/asound/card0/pcm0[pc]/sub0/status at 200 Hz and writes
+# audible-event records to /var/log/svxlink-audio-monitor.jsonl.
+#
+# Runs at low priority (Nice=10, IOSchedulingClass=idle) so it cannot
+# compete with svxlink's SCHED_FIFO 50 audio thread.
+
+[Unit]
+Description=SVXLink ALSA audio path observability monitor
+Documentation=https://github.com/iannucci/aredn-network-analysis
+After=svxlink.service
+PartOf=svxlink.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/svxlink-audio-monitor.py
+Restart=always
+RestartSec=10
+Nice=10
+IOSchedulingClass=idle
+# Run as root so /proc/PID/status of svxlink is readable for sched stats
+# (the script doesn't actually need root to read the asound files, but
+# may be extended later).
+User=root
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+# /etc/logrotate.d/svxlink-audio-monitor
+/var/log/svxlink-audio-monitor.jsonl {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+    postrotate
+        /bin/kill -HUP $(pgrep -f svxlink-audio-monitor.py) 2>/dev/null || true
+    endscript
+}

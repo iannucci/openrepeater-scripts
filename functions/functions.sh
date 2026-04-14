@@ -661,6 +661,68 @@ function finalize_svxlink_ownership {
 
 ################################################################################
 
+function install_svxlink_audio_observability {
+	# Audio-pipeline reliability and observability:
+	#
+	#   1. Drop a systemd override that runs svxlink at SCHED_FIFO priority 50
+	#      (Nice=-20, LimitRTPRIO=99, LimitMEMLOCK=infinity, IOSchedulingClass=
+	#      realtime). The default svxlink unit has LimitRTPRIO=0, which prevents
+	#      the audio thread from ever escaping standard time-sharing scheduling
+	#      and produces audible glitches on Pi 4 hardware under any non-trivial
+	#      load. Bench measurement (Phase 4 of the W6EI investigation) showed a
+	#      22x improvement in worst-case wake-up jitter under load with this
+	#      override applied. See iannucci/aredn-network-analysis for the data.
+	#
+	#   2. Install svxlink-audio-monitor as a systemd service. Always-on
+	#      observability daemon polling /proc/asound/card0/pcm0[pc]/sub0/status
+	#      at 200 Hz; writes a JSONL event log only when something interesting
+	#      happens (TX keyup, TX dekey, real or near XRUN events). Runs at
+	#      Nice=10 / IOSchedulingClass=idle so it cannot interfere with svxlink.
+	#
+	#   3. Install svxlink-audio-report as the summarizer for the JSONL log.
+	#
+	#   4. Wire up daily log rotation (7 days retention, compressed).
+	#
+	# All source files live in audio/ under this scripts repo.
+	echo "--------------------------------------------------------------"
+	echo " Installing svxlink audio reliability + observability"
+	echo "--------------------------------------------------------------"
+
+	# 1. Real-time priority drop-in for svxlink.service
+	mkdir -p /etc/systemd/system/svxlink.service.d
+	install -m 0644 "$ORP_SCRIPTS_ROOT/audio/realtime.conf" \
+		/etc/systemd/system/svxlink.service.d/realtime.conf
+
+	# 2. Audio monitor binary + service
+	install -m 0755 "$ORP_SCRIPTS_ROOT/audio/svxlink-audio-monitor.py" \
+		/usr/local/bin/svxlink-audio-monitor.py
+	install -m 0644 "$ORP_SCRIPTS_ROOT/audio/svxlink-audio-monitor.service" \
+		/etc/systemd/system/svxlink-audio-monitor.service
+
+	# 3. Audio report tool (drops .py extension for cleaner CLI use)
+	install -m 0755 "$ORP_SCRIPTS_ROOT/audio/svxlink-audio-report.py" \
+		/usr/local/bin/svxlink-audio-report
+
+	# 4. Logrotate config
+	install -m 0644 "$ORP_SCRIPTS_ROOT/audio/svxlink-audio-monitor.logrotate" \
+		/etc/logrotate.d/svxlink-audio-monitor
+
+	# Make sure the log file exists with correct ownership
+	touch /var/log/svxlink-audio-monitor.jsonl
+	chmod 0644 /var/log/svxlink-audio-monitor.jsonl
+
+	# Pick up the unit changes and the new monitor unit
+	systemctl daemon-reload
+	systemctl enable svxlink-audio-monitor.service
+
+	echo "  installed: svxlink RT priority drop-in"
+	echo "  installed: svxlink-audio-monitor.service (will start at boot)"
+	echo "  installed: svxlink-audio-report (CLI summarizer)"
+	echo "  installed: /etc/logrotate.d/svxlink-audio-monitor"
+}
+
+################################################################################
+
 function modify_sudoers {
 	echo "--------------------------------------------------------------"
 	echo " Setting up sudoers permissions for OpenRepeater"

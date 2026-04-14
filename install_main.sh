@@ -148,6 +148,7 @@ EOF
 		modify_sudoers
 		install_logrotate_config
 		finalize_svxlink_ownership
+		install_svxlink_audio_observability
 		configure_readonly_root
 
 		### ENDING FUNCTIONS ###
