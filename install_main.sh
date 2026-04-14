@@ -153,6 +153,12 @@ EOF
 		install_logrotate_config
 		finalize_svxlink_ownership
 		install_svxlink_audio_observability
+
+		# Overlay site-specific data (normalized sounds, etc.) from
+		# iannucci/openrepeater-config. Runs after both svxlink sounds
+		# and ORP sounds have been installed so the overlay wins.
+		install_orp_config_overlay
+
 		configure_readonly_root
 
 		### ENDING FUNCTIONS ###

@@ -174,6 +174,51 @@ function apply_svxlink_patches {
 
 ################################################################################
 
+# Overlay site-specific data from the openrepeater-config repo onto the target
+# filesystem. Applied AFTER svxlink and ORP have installed their own defaults
+# so the overlay wins. Currently used for:
+#   - /opt/openrepeater/sounds/*                  (peak-normalized ORP WAVs)
+#   - /usr/share/svxlink/sounds/en_US/RSSI/*      (peak-normalized RSSI WAVs)
+# Falls back to a no-op if the repo can't be fetched (offline build).
+function install_orp_config_overlay {
+	echo "--------------------------------------------------------------"
+	echo " Overlay data from iannucci/openrepeater-config"
+	echo "--------------------------------------------------------------"
+	local stage="/tmp/orp-config-overlay"
+	rm -rf "$stage"
+	if ! git clone --depth 1 https://github.com/iannucci/openrepeater-config.git "$stage"; then
+		echo "  WARN: could not clone openrepeater-config — skipping overlay."
+		return 0
+	fi
+	local rs="$stage/running-system"
+	if [ ! -d "$rs" ]; then
+		echo "  WARN: $rs not found in config repo — skipping overlay."
+		rm -rf "$stage"; return 0
+	fi
+
+	# ORP-shipped sounds (/opt/openrepeater/sounds)
+	if [ -d "$rs/opt/openrepeater/sounds" ]; then
+		cp -Rf "$rs/opt/openrepeater/sounds/." /opt/openrepeater/sounds/
+		# also mirror into /var/lib/openrepeater/sounds if it exists (ORP
+		# runtime path; normal-mode install puts real files there, not a symlink)
+		[ -d /var/lib/openrepeater/sounds ] && \
+			cp -Rf "$rs/opt/openrepeater/sounds/." /var/lib/openrepeater/sounds/
+		echo "  overlaid /opt/openrepeater/sounds"
+	fi
+
+	# svxlink-shipped sounds (RSSI tree lives under /usr/share/svxlink)
+	if [ -d "$rs/usr/share/svxlink/sounds" ]; then
+		cp -Rf "$rs/usr/share/svxlink/sounds/." /usr/share/svxlink/sounds/
+		echo "  overlaid /usr/share/svxlink/sounds"
+	fi
+
+	chown -R www-data:www-data /usr/share/svxlink/sounds /opt/openrepeater/sounds 2>/dev/null || true
+
+	rm -rf "$stage"
+}
+
+################################################################################
+
 # Assert that both ORP patches (diag-logging + jitter-buffer) survived the
 # svxlink build. Called from install_svxlink_source after `make install`.
 # Exits non-zero on failure so a partially-patched install can't complete.
