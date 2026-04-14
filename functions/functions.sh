@@ -214,6 +214,32 @@ function install_orp_config_overlay {
 
 	chown -R www-data:www-data /usr/share/svxlink/sounds /opt/openrepeater/sounds 2>/dev/null || true
 
+	# Third-party binaries (/usr/local/sbin), their config dirs
+	# (/usr/local/etc), and their systemd unit files (/etc/systemd/system).
+	# Preserves exec bits on binaries. Enables any *.service that lands
+	# in /etc/systemd/system.
+	for tree in /usr/local/sbin /usr/local/bin /usr/local/etc /etc/systemd/system; do
+		src="$rs$tree"
+		[ -d "$src" ] || continue
+		install -d -m 0755 "$tree"
+		cp -Rfp "$src/." "$tree/"
+		echo "  overlaid $tree"
+	done
+
+	# Enable any units we just dropped in.
+	if [ -d "$rs/etc/systemd/system" ]; then
+		systemctl daemon-reload
+		for unit in "$rs/etc/systemd/system"/*.service; do
+			[ -f "$unit" ] || continue
+			local uname; uname=$(basename "$unit")
+			# Skip if already enabled elsewhere (avoid duplicate symlink errors).
+			if ! systemctl is-enabled "$uname" >/dev/null 2>&1; then
+				systemctl enable "$uname" || true
+				echo "    enabled $uname"
+			fi
+		done
+	fi
+
 	rm -rf "$stage"
 }
 
