@@ -11,7 +11,12 @@
 Description=SVXLink ALSA audio path observability monitor
 Documentation=https://github.com/iannucci/aredn-network-analysis
 After=svxlink.service
-PartOf=svxlink.service
+# NOTE: deliberately NOT PartOf=svxlink.service. PartOf propagates parent
+# stops but not starts, so any `systemctl stop svxlink && … && start svxlink`
+# cycle (common during debugging) would leave this monitor stopped and
+# Restart=always wouldn't revive it (systemd treats an upstream-propagated
+# stop as intentional). The monitor reads /proc/asound directly and runs
+# fine regardless of svxlink's state, so the coupling is unnecessary.
 
 [Service]
 Type=simple

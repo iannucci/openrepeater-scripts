@@ -9,7 +9,7 @@
 Description=SVXLink RX squelch GPIO edge monitor
 Documentation=https://github.com/iannucci/aredn-network-analysis
 After=svxlink.service
-PartOf=svxlink.service
+# See svxlink-audio-monitor.service for why PartOf= is deliberately omitted.
 
 [Service]
 Type=simple
