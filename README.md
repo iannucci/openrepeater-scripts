@@ -1,5 +1,19 @@
-OpenRepeater Build Script
+OpenRepeater Build Script — W6EI fork (branch `2.1.3-bookworm`)
 =======
+
+> **This is a fork.** It targets Debian 12 / Bookworm + SVXLink 24.02 +
+> ORP 2.1.3 web UI on Raspberry Pi 4/5 for the W6EI deployment
+> (Palo Alto, CA). Diverges significantly from upstream.
+>
+> **Authoritative rebuild procedure:**
+> [iannucci/openrepeater-config/BUILD.md](https://github.com/iannucci/openrepeater-config/blob/main/BUILD.md).
+> Start there, not here. The `w6ei-YYYY-MM-DD` tags in all three
+> related repos mark validated snapshots.
+
+---
+
+### Upstream original README follows
+
 This is the repository for the install/build script for the OpenRepeater project. With this script you can install OpenRepeater on your system or use it to build a complete system to image for download by others. The script will install the OpenRepeater UI, SVXLink, and other packages and dependancies required by OpenRepeater. It will also make some other system adjustments as well.
 
 While this script is primarily created to run on a Raspberry Pi, it will most likely work on other Debian based systems, but will need modified accordingly or you may have to manually figure out and make these adjustments on your own. 
