@@ -43,15 +43,34 @@ LOG = "/var/log/svxlink-gpio-monitor.jsonl"
 
 
 def ensure_exported():
-    """Make sure gpioN is exported in sysfs. It already should be because
-    svxlink exports it on startup, but be defensive."""
-    if not os.path.exists(SYSFS):
+    """Make sure gpioN is exported in sysfs. Normally svxlink exports it
+    on startup. On a host without the ICS board hardware (bench Pi with
+    no radio interface), the pin may never exist — in that case we poll
+    here waiting for it to appear rather than crashing the service. Once
+    it appears (e.g., after hardware is attached or card is moved into
+    production), we proceed."""
+    waited = 0
+    while not os.path.exists(SYSFS):
         try:
             with open("/sys/class/gpio/export", "w") as f:
                 f.write(PIN)
+            break
         except OSError as e:
-            if e.errno != errno.EBUSY:  # already exported
-                raise
+            if e.errno == errno.EBUSY:
+                break  # already exported
+            # Directory may not exist at all (no GPIO controller, no svxlink
+            # running yet, or pin not valid). Wait and try again.
+            if waited == 0:
+                sys.stderr.write(
+                    f"svxlink-gpio-monitor: waiting for /sys/class/gpio/gpio{PIN} "
+                    f"to appear (last err: {e.strerror}). Will keep retrying.\n")
+                sys.stderr.flush()
+            time.sleep(10)
+            waited += 10
+    # Final sanity: if still not present, wait here forever (Restart=always
+    # would otherwise just loop us endlessly).
+    while not os.path.exists(SYSFS):
+        time.sleep(30)
 
 
 def ensure_edge_both():
