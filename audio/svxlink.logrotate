@@ -1,0 +1,19 @@
+# /etc/logrotate.d/svxlink
+#
+# Rotate svxlink's main log file. Default svxlink install does not
+# ship a logrotate config, so /var/log/svxlink grows without bound.
+# This becomes especially relevant when the diagnostic-logging
+# patch (patches/svxlink-diag-logging.patch) is in effect, which
+# adds low-rate-but-persistent entries for squelch/repeater/TX
+# state transitions.
+#
+# Rotation: daily, keep 7 compressed days.
+
+/var/log/svxlink {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

@@ -1,0 +1,75 @@
+--- src/svxlink/trx/Squelch.cpp.orig	2026-04-14 08:19:50.065731799 -0700
++++ src/svxlink/trx/Squelch.cpp	2026-04-14 08:20:49.236564831 -0700
+@@ -323,11 +323,11 @@
+ 
+ void Squelch::setSignalDetectedP(bool is_detected)
+ {
+-  //std::cout << "### Squelch::setSignalDetectedP["
+-  //          << m_name << "]: is_detected=" << is_detected
+-  //          << " m_delay=" << m_delay
+-  //          << " m_delay_left=" << m_delay_left
+-  //          << std::endl;
++  if (is_detected != m_signal_detected) {
++    std::cout << m_name << ": Squelch detector transition -> "
++              << (is_detected ? "DETECTED" : "LOST")
++              << std::endl;
++  }
+ 
+   m_signal_detected = is_detected;
+ 
+@@ -371,8 +371,10 @@
+ 
+ void Squelch::setOpen(bool is_open)
+ {
+-  //std::cout << "### Squelch::setOpen["
+-  //          << m_name << "]: is_open=" << is_open << std::endl;
++  if (is_open != m_open) {
++    std::cout << m_name << ": Squelch (post-debounce) "
++              << (is_open ? "OPEN" : "CLOSED") << std::endl;
++  }
+ 
+   if (is_open != m_open)
+   {
+--- src/svxlink/trx/LocalTx.cpp.orig	2026-04-14 08:25:18.847236477 -0700
++++ src/svxlink/trx/LocalTx.cpp	2026-04-14 08:20:49.236564831 -0700
+@@ -741,6 +741,10 @@
+ 
+ void LocalTx::setTxCtrlMode(Tx::TxCtrlMode mode)
+ {
++  static const char *mode_name[] = { "OFF", "ON", "AUTO" };
++  std::cout << name() << ": Tx control mode set to "
++            << (mode >= Tx::TX_OFF && mode <= Tx::TX_AUTO ? mode_name[mode] : "?")
++            << std::endl;
+   ptt_ctrl->setTxCtrlMode(mode);
+   switch (mode)
+   {
+--- src/svxlink/svxlink/RepeaterLogic.cpp.orig	2026-04-14 08:19:50.069731720 -0700
++++ src/svxlink/svxlink/RepeaterLogic.cpp	2026-04-14 08:20:49.236564831 -0700
+@@ -547,12 +547,13 @@
+ 
+ void RepeaterLogic::setUp(bool up, string reason)
+ {
+-  //std::cout << "### RepeaterLogic::setUp: up=" << up
+-  //          << "  reason=" << reason << std::endl;
+   if (up == repeater_is_up)
+   {
+     return;
+   }
++  std::cout << name() << ": Repeater "
++            << (up ? "OPENING" : "CLOSING")
++            << " (reason=" << reason << ")" << std::endl;
+   
+   if (up)
+   {
+--- src/svxlink/svxlink/Logic.cpp.orig	2026-04-14 08:19:50.073731641 -0700
++++ src/svxlink/svxlink/Logic.cpp	2026-04-14 08:20:49.236564831 -0700
+@@ -1482,6 +1482,9 @@
+ 
+ void Logic::processCommand(const std::string &cmd, bool force_core_cmd)
+ {
++  std::cout << name() << ": processCommand(\"" << cmd
++            << "\", core=" << (force_core_cmd ? "true" : "false") << ")"
++            << std::endl;
+   if (cmd[0] == '*')
+   {
+     string rest(cmd, 1);

@@ -711,6 +711,13 @@ function install_svxlink_audio_observability {
 	touch /var/log/svxlink-audio-monitor.jsonl
 	chmod 0644 /var/log/svxlink-audio-monitor.jsonl
 
+	# 4a. svxlink's own log (/var/log/svxlink) has no default
+	#     logrotate config; add one. Particularly relevant once the
+	#     diagnostic-logging patch (patches/svxlink-diag-logging.patch)
+	#     adds routine transition events.
+	install -m 0644 "$ORP_SCRIPTS_ROOT/audio/svxlink.logrotate" \
+		/etc/logrotate.d/svxlink
+
 	# 5. GPIO squelch edge monitor — independent edge-triggered
 	#    observability of the RX squelch GPIO pin. Hunts the
 	#    "user keys up but repeater doesn't respond" failure mode
