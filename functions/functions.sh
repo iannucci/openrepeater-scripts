@@ -226,6 +226,13 @@ function install_orp_config_overlay {
 		echo "  overlaid $tree"
 	done
 
+	# Root SSH authorized_keys (site-specific operator access).
+	if [ -f "$rs/root/.ssh/authorized_keys" ]; then
+		install -d -m 0700 -o root -g root /root/.ssh
+		install -m 0600 -o root -g root "$rs/root/.ssh/authorized_keys" /root/.ssh/authorized_keys
+		echo "  overlaid /root/.ssh/authorized_keys"
+	fi
+
 	# Enable any units we just dropped in.
 	if [ -d "$rs/etc/systemd/system" ]; then
 		systemctl daemon-reload
