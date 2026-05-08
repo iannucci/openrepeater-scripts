@@ -9,26 +9,29 @@
  
  
  /****************************************************************************
-@@ -478,6 +480,23 @@
+@@ -478,6 +480,26 @@
      static const int  	BUFFER_SIZE      	= FRAME_COUNT*160;
      static const int    BLOCK_TIME              = FRAME_COUNT*1000*160/8000;
  
 +    // --- RX jitter buffer tunables ---
 +    // Number of BLOCK_TIME (80ms) packets to accumulate before starting playout.
 +    // 0 = disabled (legacy behaviour: packets played immediately on arrival, no
-+    // reorder tolerance, no loss concealment). Recommended default: 3 (=240ms).
-+    // Determined empirically by simulating real captured pcaps (see
-+    // ~/Documents/Claude/jitter/simulate_jitter_buffer.py), 240ms of added
-+    // latency eliminates 89-91% of audible glitches on a representative
-+    // real-world path.
-+    static const int    JITTER_TARGET_DEPTH     = 3;
++    // reorder tolerance, no loss concealment). Original recommended default
++    // was 3 (=240ms) based on simulation of representative pcaps. Bumped to
++    // 5 (=400ms) for the W6EI repeater on AREDN + Bay Area Backbone, where
++    // jitter exceeds the 240ms tolerance and the live JB log shows steady
++    // underruns at the 240ms target. See claude-context/project_jitter_buffer_tuning.md.
++    static const int    JITTER_TARGET_DEPTH     = 5;
 +    // Buffer ceiling — if the map grows larger than this, the oldest packet is
-+    // evicted. Protects against runaway memory if the sink stalls.
-+    static const int    JITTER_MAX_DEPTH        = 10;
++    // evicted. Protects against runaway memory if the sink stalls. Bumped from
++    // 10 to 20 (=1600ms) so legitimate bursts of 11-15 packets (observed in
++    // W6EI live data) don't cause overflow drops.
++    static const int    JITTER_MAX_DEPTH        = 20;
 +    // Number of consecutive silent playout ticks (BLOCK_TIME=80ms each)
 +    // that must accumulate before concluding the sender has paused (vs
-+    // normal network jitter) and resetting playout. 5 ticks = 400 ms.
-+    static const int    JITTER_UNDERRUN_RESET_TICKS = 5;
++    // normal network jitter) and resetting playout. Bumped from 5 (=400ms)
++    // to 10 (=800ms) so brief but real network gaps don't drop sync.
++    static const int    JITTER_UNDERRUN_RESET_TICKS = 10;
 +
      bool      	      	init_ok;
      unsigned char      	sdes_packet[1500];
