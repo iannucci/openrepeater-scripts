@@ -37,19 +37,25 @@ ORP_RMT_RELAY_BRANCH="1.1" ### FOR DEPRECIATED FUNCTION
 # PRE-INSTALL
 ################################################################################
 
+# Resolve the script's own directory robustly. ${BASH_SOURCE%/*} returns the
+# script name itself when invoked as `bash install_main.sh` (no leading path),
+# which then mis-sources the function files as "install_main.sh/functions/...".
+# Using a resolved absolute path avoids that.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Make sure function scripts are executable.
-chmod +x functions/*
+chmod +x "$SCRIPT_DIR"/functions/*
 
 # Include Menus file
-source "${BASH_SOURCE%/*}/functions/menus.sh"
+source "$SCRIPT_DIR/functions/menus.sh"
 
 # Include Main Functions File & RPI functions
-source "${BASH_SOURCE%/*}/functions/functions.sh"
-source "${BASH_SOURCE%/*}/functions/functions_rpi.sh"
-source "${BASH_SOURCE%/*}/functions/functions_motd.sh"
-source "${BASH_SOURCE%/*}/functions/functions_ics.sh"
-source "${BASH_SOURCE%/*}/functions/functions_os_patches.sh"
-source "${BASH_SOURCE%/*}/functions/functions_readonly.sh"
+source "$SCRIPT_DIR/functions/functions.sh"
+source "$SCRIPT_DIR/functions/functions_rpi.sh"
+source "$SCRIPT_DIR/functions/functions_motd.sh"
+source "$SCRIPT_DIR/functions/functions_ics.sh"
+source "$SCRIPT_DIR/functions/functions_os_patches.sh"
+source "$SCRIPT_DIR/functions/functions_readonly.sh"
 
 
 ### INITIAL FUNCTIONS ####
@@ -67,16 +73,23 @@ START_TIME=`date +%s`
 # USER INPUT
 ################################################################################
 
-menu_welcome_message
-express_build_menu
+# Skip the whiptail menus when the wrapper has already provided
+# INPUT_EXPRESS_INSTALL=yes via the environment. Without this guard, an
+# unattended build hangs forever waiting for a TTY that isn't there.
+if [ -z "${INPUT_EXPRESS_INSTALL:-}" ]; then
+	menu_welcome_message
+	express_build_menu
+fi
 
-if [ $INPUT_EXPRESS_INSTALL = "yes" ]; then
-	HOSTNAME="openrepeater"
-	INPUT_INSTALL_TYPE="ORP"
-	INPUT_SVXLINK_CONTRIBS=""
-	INPUT_SVXLINK_INSTALL_TYPE="svx_released"
-	
-	
+if [ "$INPUT_EXPRESS_INSTALL" = "yes" ]; then
+	# Honor any env-supplied values; only fall back to defaults for
+	# anything the wrapper didn't set. The previous unconditional
+	# HOSTNAME="openrepeater" overwrote whatever the wrapper passed in,
+	# making it impossible to build a card with a non-default hostname.
+	HOSTNAME="${HOSTNAME:-openrepeater}"
+	INPUT_INSTALL_TYPE="${INPUT_INSTALL_TYPE:-ORP}"
+	INPUT_SVXLINK_CONTRIBS="${INPUT_SVXLINK_CONTRIBS:-}"
+	INPUT_SVXLINK_INSTALL_TYPE="${INPUT_SVXLINK_INSTALL_TYPE:-svx_released}"
 else
 	menu_hostname
 	menu_build_type
@@ -92,7 +105,7 @@ fi
 # MAIN SCRIPT - Run Functions and Save to Log
 ################################################################################
 
-Run script and output to log file
+# Run script and output to log file
 (
 	date
 
