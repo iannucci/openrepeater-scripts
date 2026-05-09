@@ -387,9 +387,20 @@ function install_orp_config_overlay {
 
 ################################################################################
 
-# Assert that both ORP patches (diag-logging + jitter-buffer) survived the
-# svxlink build. Called from install_svxlink_source after `make install`.
-# Exits non-zero on failure so a partially-patched install can't complete.
+# Assert that the ORP patches survived the svxlink build. Called from
+# install_svxlink_source after `make install`. Exits non-zero on failure
+# so a partially-patched install can't complete.
+#
+# Patches checked here (all carry detectable string or symbol markers):
+#   01-svxlink-jitter-buffer.patch         — jitterBufferInsert symbol
+#   02-svxlink-jitter-buffer-logging.patch — "EchoLink JB:" log strings
+#   03-svxlink-diag-logging.patch          — diag log strings
+#   05-svxlink-mlockall.patch              — perror string
+#
+# The 04-svxlink-shrink-tx-fifo.patch changes only numeric literals (the
+# tx_fifo size), so it has no `strings`-detectable marker. Its presence
+# is asserted at apply time (apply_svxlink_patches errors out on a failed
+# patch -p0) and verified post-boot by observing TX-tail length.
 function verify_svxlink_patches {
 	echo "--------------------------------------------------------------"
 	echo " Verifying ORP patches present in installed svxlink binaries"

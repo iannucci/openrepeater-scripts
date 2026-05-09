@@ -184,7 +184,7 @@ cd src
 # ... cmake and make as before ...
 ```
 
-The `apply_svxlink_patches` function is also new to `functions/functions.sh`. It uses a global `ORP_SCRIPTS_ROOT` (resolved at script source time via `cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P`) to locate the `patches/` directory even after the build script has `cd`'d into `/root`. It iterates `patches/*.patch`, applies each with `patch -p0`, and errors out on any reject. Currently there is exactly one patch; the infrastructure is designed to accept additional patches in the future.
+The `apply_svxlink_patches` function is also new to `functions/functions.sh`. It uses a global `ORP_SCRIPTS_ROOT` (resolved at script source time via `cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P`) to locate the `patches/` directory even after the build script has `cd`'d into `/root`. Patches are now numbered (`01-…` through `05-…`) and applied in lexical order to preserve dependencies — `02-svxlink-jitter-buffer-logging.patch` builds on `01-svxlink-jitter-buffer.patch` and would reject if applied first. The function applies each with `patch -p0` and errors out on any reject. As of 2026-05-09, five patches ship: jitter-buffer, jitter-buffer-logging, diag-logging, shrink-tx-fifo, mlockall. See `BUILD.md` in `openrepeater-config` for the full list and rationale.
 
 Fresh card builds via the normal ORP build path pick up the patch automatically with no manual steps. There is nothing to enable or configure.
 
