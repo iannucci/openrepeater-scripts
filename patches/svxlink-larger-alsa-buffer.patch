@@ -1,6 +1,6 @@
 --- src/svxlink/svxlink/svxlink.cpp.orig
 +++ src/svxlink/svxlink/svxlink.cpp
-@@ -447,8 +447,13 @@
+@@ -447,8 +447,16 @@
      int rate = atoi(value.c_str());
      if (rate == 48000)
      {
@@ -9,10 +9,13 @@
 +      // ORP patch: bump ALSA period/buffer to absorb SD-card I/O and
 +      // page-fault stalls. Default 1024/4 = 85 ms buffer is too tight
 +      // for the read-only-root + tmpfs setup; any ≥85 ms stall causes
-+      // a TX underrun (audible mid-transmission stutter, observed
-+      // via svxlink-audio-monitor's tx_xrun_real_mid events).
++      // a TX underrun (audible mid-transmission stutter).
++      // 2048/4 = 170 ms buffer: 2x upstream, enough headroom to
++      // absorb most stalls without making the half-duplex PTT-release
++      // tail perceptibly long. (8x upstream = 341 ms eliminated all
++      // xruns but produced an audible tail at unkey on the air.)
 +      AudioIO::setBlocksize(2048);   // 43 ms period
-+      AudioIO::setBlockCount(8);     // 341 ms buffer (4x upstream)
++      AudioIO::setBlockCount(4);     // 170 ms buffer (2x upstream)
      }
      else if (rate == 16000)
      {
