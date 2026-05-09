@@ -148,7 +148,7 @@ function set_hostname () {
 # Patches are applied with -p0 so their paths must be relative to the
 # svxlink source root.
 #
-# Patch ORDER MATTERS. The four patches we ship build on each other:
+# Patch ORDER MATTERS. The five patches we ship build on each other:
 #   01-svxlink-jitter-buffer.patch         — adds m_silent_ticks, jitter
 #                                            buffer methods, etc.
 #   02-svxlink-jitter-buffer-logging.patch — adds log strings that
@@ -158,6 +158,8 @@ function set_hostname () {
 #                                            strings.
 #   04-svxlink-shrink-tx-fifo.patch        — independent ALSA buffer
 #                                            tuning.
+#   05-svxlink-mlockall.patch              — mlockall(MCL_CURRENT|MCL_FUTURE)
+#                                            at top of main(); independent.
 #
 # We deliberately use NUMERIC PREFIXES + an explicit `sort` instead of a
 # bare glob. Without prefixes, `patches/svxlink-jitter-buffer-logging.patch`
@@ -166,11 +168,10 @@ function set_hostname () {
 # because the symbols it references don't exist yet. Every fresh contributor
 # would re-discover this. Prefixes make ordering self-documenting.
 #
-# UNTRACKED files (e.g. patches/svxlink-mlockall.patch on the workstation)
-# are intentionally NOT picked up — production does not ship mlockall, and
-# we do not want a stray .patch in someone's working tree to differentiate
-# their build from prod. The glob still includes any committed *.patch, so
-# new patches must be (a) committed and (b) prefixed in the desired order.
+# UNTRACKED *.patch files in the patches/ directory ARE picked up by the
+# glob (intentionally — local development should be visible). Production
+# builds clone from a git tag, where untracked files do not exist. If you
+# author a new patch, commit it with the next numeric prefix.
 function apply_svxlink_patches {
 	echo "--------------------------------------------------------------"
 	echo " Applying ORP patches to svxlink source tree"
@@ -244,14 +245,63 @@ function install_orp_config_overlay {
 	# Third-party binaries (/usr/local/sbin), their config dirs
 	# (/usr/local/etc), and their systemd unit files (/etc/systemd/system).
 	# Preserves exec bits on binaries. Enables any *.service that lands
-	# in /etc/systemd/system.
-	for tree in /usr/local/sbin /usr/local/bin /usr/local/etc /etc/systemd/system; do
+	# in /etc/systemd/system. Also overlays /boot/firmware so the
+	# kernel cmdline (isolcpus / nohz_full / rcu_nocbs CPU shielding)
+	# and /etc/svxlink so site-specific gpio.conf, svxlink.conf,
+	# svxlink.d/*, and the W6EI-tuned MCP23017 mappings land on a
+	# fresh card without manual scp.
+	#
+	# Order: /boot/firmware MUST be overlaid before configure_readonly_root
+	# runs (which appends `ro` to cmdline.txt). install_main.sh already
+	# calls install_orp_config_overlay before configure_readonly_root.
+	for tree in \
+		/usr/local/sbin \
+		/usr/local/bin \
+		/usr/local/etc \
+		/etc/systemd/system \
+		/boot/firmware \
+		/etc/svxlink
+	do
 		src="$rs$tree"
 		[ -d "$src" ] || continue
 		install -d -m 0755 "$tree"
 		cp -Rfp "$src/." "$tree/"
 		echo "  overlaid $tree"
 	done
+
+	# Site-specific NetworkManager profiles (USB-Backup, etc.) drop into
+	# /etc/NetworkManager/system-connections with strict 0600 root:root.
+	# NetworkManager refuses to load profiles with looser perms.
+	if [ -d "$rs/etc/NetworkManager/system-connections" ]; then
+		install -d -m 0700 -o root -g root /etc/NetworkManager/system-connections
+		for prof in "$rs/etc/NetworkManager/system-connections"/*.nmconnection; do
+			[ -f "$prof" ] || continue
+			install -m 0600 -o root -g root "$prof" /etc/NetworkManager/system-connections/
+			echo "    installed NM profile: $(basename "$prof")"
+		done
+	fi
+
+	# Site-specific ORP database seed. The fresh ORP install left a blank
+	# DB at /var/lib/openrepeater/db/openrepeater.db (callsign cleared,
+	# EchoLink disabled — see install_orp_from_github). The overlay lets
+	# us replace it with the captured production DB so a fresh card boots
+	# with the W6EI configuration intact, no manual restore required.
+	# configure_readonly_root then copies this DB to the read-only seed
+	# at /opt/openrepeater/openrepeater.db.seed.
+	if [ -f "$rs/var/lib/openrepeater/db/openrepeater.db" ]; then
+		install -d -m 0775 -o www-data -g www-data /var/lib/openrepeater/db
+		install -m 0664 -o www-data -g www-data \
+			"$rs/var/lib/openrepeater/db/openrepeater.db" \
+			/var/lib/openrepeater/db/openrepeater.db
+		echo "  overlaid /var/lib/openrepeater/db/openrepeater.db (site DB)"
+	fi
+
+	# Re-assert www-data ownership on /etc/svxlink. cp -Rfp above used
+	# whatever uid/gid is recorded on the workstation (typically root or
+	# the user who committed); ORP's php-fpm process must be able to
+	# rewrite these files when the operator clicks "Rebuild & Restart".
+	# Mirrors finalize_svxlink_ownership but runs AFTER the overlay copy.
+	chown -R www-data:www-data /etc/svxlink 2>/dev/null || true
 
 	# Root SSH authorized_keys (site-specific operator access).
 	if [ -f "$rs/root/.ssh/authorized_keys" ]; then
@@ -322,12 +372,22 @@ function verify_svxlink_patches {
 		fi
 	done
 
+	# mlockall patch: error string emitted only on failure path; cheap to
+	# detect in `strings` and present iff the patch was applied. Verifying
+	# at runtime via /proc/<pid>/status:VmLck is the better check, but
+	# requires svxlink to be running — done in the post-boot verification
+	# checklist, not here.
+	if ! strings /usr/bin/svxlink | grep -qF 'mlockall (continuing without page-locking)'; then
+		echo "*** MISSING mlockall marker: 'mlockall (continuing without page-locking)'"
+		ok=0
+	fi
+
 	if [ "$ok" -ne 1 ]; then
 		echo "*** ERROR: svxlink build is missing required ORP patches."
 		echo "*** The bench must be remotely diagnosable — refusing to continue."
 		exit 1
 	fi
-	echo "  OK — diag-logging and jitter-buffer patches both present"
+	echo "  OK — diag-logging, jitter-buffer, and mlockall patches all present"
 }
 
 ################################################################################

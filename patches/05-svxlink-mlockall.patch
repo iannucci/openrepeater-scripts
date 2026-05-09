@@ -1,0 +1,29 @@
+--- src/svxlink/svxlink/svxlink.cpp.orig
++++ src/svxlink/svxlink/svxlink.cpp
+@@ -42,6 +42,7 @@
+ #include <signal.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#include <sys/mman.h>
+ #include <fcntl.h>
+ #include <dirent.h>
+ #include <pwd.h>
+@@ -187,6 +188,18 @@
+ int main(int argc, char **argv)
+ {
+   setlocale(LC_ALL, "");
++
++  // ORP patch: lock all current and future address-space pages into RAM.
++  // The audio thread runs at SCHED_FIFO 50 on an isolcpus-shielded core,
++  // but if any code or data page is paged out (or never paged in), the
++  // first touch traps to the kernel for a major page fault — long enough
++  // to miss an ALSA period deadline and produce tx_xrun_real_mid /
++  // rx_xrun events. mlockall eliminates that class of stall outright.
++  // Requires LimitMEMLOCK=infinity in the systemd unit (already set).
++  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
++  {
++    perror("mlockall (continuing without page-locking)");
++  }
+
+   CppApplication app;
+   app.catchUnixSignal(SIGHUP);
