@@ -89,5 +89,19 @@ function set_ics_mixer {
 		amixer -c 0 sset Lineout on    >/dev/null 2>&1 || true
 		amixer -c 0 sset Lineout 18    >/dev/null 2>&1 || true
 	fi
+
+	# Belt-and-suspenders: explicitly force Lineout Playback Switch on,
+	# regardless of what the saved state file says. The Fe-Pi codec
+	# defaults to Lineout muted at power-on. On the bench card build,
+	# the saved asound.state had Lineout=on but somewhere between
+	# alsactl restore and the actual codec hardware the switch came
+	# back up muted, leaving the system silent. This double-tap is
+	# cheap insurance and a no-op when the restore worked correctly.
+	# Use both numid and named control because amixer naming has
+	# varied across codec driver versions.
+	amixer -c 0 sset 'Lineout Playback Switch' on >/dev/null 2>&1 || true
+	# numid=11 is the Lineout Playback Switch on sgtl5000-based Fe-Pi cards.
+	amixer -c 0 cset numid=11 on >/dev/null 2>&1 || true
+
 	alsactl store 0                    >/dev/null 2>&1 || true
 }
