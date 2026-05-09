@@ -1,0 +1,20 @@
+--- src/svxlink/svxlink/Logic.cpp.orig
++++ src/svxlink/svxlink/Logic.cpp
+@@ -553,6 +553,13 @@
+   prev_tx_src = state_det;
+
+     // Add a pre-buffered FIFO to avoid underrun
+-  AudioFifo *tx_fifo = new AudioFifo(1024 * INTERNAL_SAMPLE_RATE / 8000);
+-  tx_fifo->setPrebufSamples(512 * INTERNAL_SAMPLE_RATE / 8000);
++  // ORP patch: shrink tx_fifo from 128 ms to 32 ms (16 ms prebuf
++  // instead of 64 ms). Upstream's larger fifo existed to absorb
++  // stalls in the audio thread; on this build the stalls have been
++  // eliminated structurally — svxlink runs at SCHED_FIFO 50 on an
++  // isolcpus-shielded CPU 3 with sound files preloaded into the page
++  // cache. Excess fifo capacity translates directly into half-duplex
++  // PTT-release tail length on the air.
++  AudioFifo *tx_fifo = new AudioFifo(256 * INTERNAL_SAMPLE_RATE / 8000);
++  tx_fifo->setPrebufSamples(128 * INTERNAL_SAMPLE_RATE / 8000);
+   prev_tx_src->registerSink(tx_fifo, true);
+   prev_tx_src = tx_fifo;
+
