@@ -1,0 +1,33 @@
+--- src/svxlink/modules/echolink/ModuleEchoLink.cpp.orig	2026-05-09 12:30:29
++++ src/svxlink/modules/echolink/ModuleEchoLink.cpp	2026-05-09 12:30:29
+@@ -52,6 +52,7 @@
+ #include <AsyncAudioSplitter.h>
+ #include <AsyncAudioValve.h>
+ #include <AsyncAudioSelector.h>
++#include <AsyncAudioAmp.h>
+ #include <EchoLinkDirectory.h>
+ #include <EchoLinkDispatcher.h>
+ #include <EchoLinkProxy.h>
+@@ -379,7 +380,21 @@
+     // Create audio pipe chain for audio received from the remove EchoLink
+     // stations: (QsoImpl -> ) Selector -> Fifo -> <to core>
+   selector = new AudioSelector;
+-  AudioSource::setHandler(selector);
++
++  // ORP patch: insert a configurable gain stage in the RX path (audio
++  // from remote EchoLink stations into the local logic core, broadcast
++  // out the local TX). EchoLink protocol delivers audio at a fixed
++  // level typically 6-10 dB below local sound files and RF traffic at
++  // the repeater output, so remote EchoLink users sound noticeably
++  // quieter on the air than local users. The LOCAL_AUDIO_GAIN setting
++  // in svxlink.conf [ModuleEchoLink] (in dB) controls this; default
++  // 0 dB matches upstream behavior.
++  float local_audio_gain_db = 0.0f;
++  cfg().getValue(cfgName(), "LOCAL_AUDIO_GAIN", local_audio_gain_db);
++  AudioAmp *rx_amp = new AudioAmp;
++  rx_amp->setGain(local_audio_gain_db);
++  selector->registerSink(rx_amp);
++  AudioSource::setHandler(rx_amp);
+   
+     // Periodic updates of the "watch num connects" list
+   if (num_con_max > 0)
