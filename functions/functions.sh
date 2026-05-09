@@ -141,14 +141,36 @@ function set_hostname () {
 
 ################################################################################
 
-# Apply any patches under patches/*.patch in the openrepeater-scripts
-# repo to the current directory (which should be the root of an extracted
-# svxlink source tree). Patches are applied with -p0 so their paths must
-# be relative to the svxlink source root.
+# Apply ORP patches to the svxlink source tree.
 #
-# Used by install_svxlink_source after the svxlink tarball is extracted or
-# the git clone completes, before cmake configures the build. See
-# patches/svxlink-jitter-buffer.patch for the one patch currently shipped.
+# Called from install_svxlink_source after the source tree is extracted (or
+# cloned) and before cmake. CWD must be the root of the svxlink source.
+# Patches are applied with -p0 so their paths must be relative to the
+# svxlink source root.
+#
+# Patch ORDER MATTERS. The four patches we ship build on each other:
+#   01-svxlink-jitter-buffer.patch         — adds m_silent_ticks, jitter
+#                                            buffer methods, etc.
+#   02-svxlink-jitter-buffer-logging.patch — adds log strings that
+#                                            REFERENCE m_silent_ticks
+#                                            (must apply AFTER 01).
+#   03-svxlink-diag-logging.patch          — independent squelch/PTT log
+#                                            strings.
+#   04-svxlink-shrink-tx-fifo.patch        — independent ALSA buffer
+#                                            tuning.
+#
+# We deliberately use NUMERIC PREFIXES + an explicit `sort` instead of a
+# bare glob. Without prefixes, `patches/svxlink-jitter-buffer-logging.patch`
+# sorts BEFORE `patches/svxlink-jitter-buffer.patch` (the dash 0x2D sorts
+# before the dot 0x2E in ASCII), and the logging patch fails to apply
+# because the symbols it references don't exist yet. Every fresh contributor
+# would re-discover this. Prefixes make ordering self-documenting.
+#
+# UNTRACKED files (e.g. patches/svxlink-mlockall.patch on the workstation)
+# are intentionally NOT picked up — production does not ship mlockall, and
+# we do not want a stray .patch in someone's working tree to differentiate
+# their build from prod. The glob still includes any committed *.patch, so
+# new patches must be (a) committed and (b) prefixed in the desired order.
 function apply_svxlink_patches {
 	echo "--------------------------------------------------------------"
 	echo " Applying ORP patches to svxlink source tree"
@@ -159,7 +181,12 @@ function apply_svxlink_patches {
 		return 0
 	fi
 	local applied=0
-	for p in "$patch_dir"/*.patch; do
+	# Explicit sort so ordering is independent of the shell's glob
+	# expansion locale and any future filesystem quirks.
+	local patches
+	patches=$(ls -1 "$patch_dir"/*.patch 2>/dev/null | LC_ALL=C sort)
+	[ -z "$patches" ] && { echo "  no patches found in $patch_dir"; return 0; }
+	while IFS= read -r p; do
 		[ -f "$p" ] || continue
 		echo "  applying $(basename "$p")"
 		if ! patch -p0 < "$p"; then
@@ -167,7 +194,7 @@ function apply_svxlink_patches {
 			return 1
 		fi
 		applied=$((applied + 1))
-	done
+	done <<< "$patches"
 	echo "  $applied patch(es) applied successfully"
 	return 0
 }
