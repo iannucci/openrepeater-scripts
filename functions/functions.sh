@@ -148,7 +148,7 @@ function set_hostname () {
 # Patches are applied with -p0 so their paths must be relative to the
 # svxlink source root.
 #
-# Patch ORDER MATTERS. The five patches we ship build on each other:
+# Patch ORDER MATTERS. The six patches we ship build on each other:
 #   01-svxlink-jitter-buffer.patch         — adds m_silent_ticks, jitter
 #                                            buffer methods, etc.
 #   02-svxlink-jitter-buffer-logging.patch — adds log strings that
@@ -160,6 +160,8 @@ function set_hostname () {
 #                                            tuning.
 #   05-svxlink-mlockall.patch              — mlockall(MCL_CURRENT|MCL_FUTURE)
 #                                            at top of main(); independent.
+#   06-svxlink-echolink-rx-gain.patch      — LOCAL_AUDIO_GAIN config in
+#                                            ModuleEchoLink; independent.
 #
 # We deliberately use NUMERIC PREFIXES + an explicit `sort` instead of a
 # bare glob. Without prefixes, `patches/svxlink-jitter-buffer-logging.patch`
