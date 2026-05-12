@@ -1,0 +1,48 @@
+--- src/svxlink/svxlink/Logic.cpp.orig
++++ src/svxlink/svxlink/Logic.cpp
+@@ -64,6 +64,7 @@
+ #include <Tx.h>
+ #include <AsyncAudioPassthrough.h>
+ #include <AsyncAudioMixer.h>
++#include <AsyncAudioGenerator.h>
+ #include <AsyncAudioAmp.h>
+ #include <AsyncAudioSelector.h>
+ #include <AsyncAudioSplitter.h>
+@@ -562,6 +563,37 @@
+   tx_audio_mixer = new AudioMixer;
+   tx_audio_mixer->addSource(prev_tx_src);
+   prev_tx_src = tx_audio_mixer;
++
++    // ORP patch: continuous low-level idle dither.
++    // When the audio path is completely silent (zero samples flowing
++    // to the DAC), some active feedback loop downstream of the codec
++    // can enter a limit cycle that's audible on the air as a buzz.
++    // Mixing a continuous sub-audio tone into tx_audio_mixer ensures
++    // the DAC never sees pure-zero input.
++    //
++    // Configured via IDLE_DITHER_FQ (Hz) and IDLE_DITHER_POWER_DBFS
++    // in svxlink.conf [<LOGIC>] section. Default disabled (-200 dBFS
++    // sentinel); patch is a no-op until explicitly enabled per-card.
++    //
++    // The AudioGenerator's internal write-loop runs as long as its
++    // sink accepts samples; without a paced sink it spins the CPU.
++    // We interpose an AudioPacer (same pattern as msg_pacer below)
++    // so the generator emits at real-time, not as fast as possible.
++    float dither_fq = 5.0f;
++    float dither_pwr_db = -200.0f;
++    cfg().getValue(name(), "IDLE_DITHER_FQ", dither_fq);
++    cfg().getValue(name(), "IDLE_DITHER_POWER_DBFS", dither_pwr_db);
++    if (dither_pwr_db > -199.0f)
++    {
++      AudioGenerator *idle_dither = new AudioGenerator(AudioGenerator::SIN);
++      idle_dither->setFq(dither_fq);
++      idle_dither->setPower(dither_pwr_db);
++      AudioPacer *dither_pacer = new AudioPacer(INTERNAL_SAMPLE_RATE,
++          256 * INTERNAL_SAMPLE_RATE / 8000, 0);
++      idle_dither->registerSink(dither_pacer, true);
++      tx_audio_mixer->addSource(dither_pacer);
++      idle_dither->enable(true);
++    }
+ 
+     // Create the TX object
+   std::cout << name() << ": Loading TX \"" << tx_name << "\"" << endl;
