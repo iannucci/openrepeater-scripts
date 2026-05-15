@@ -1,0 +1,90 @@
+ORP diagnostic patch 09 — log silent mid-stream sample loss in the ALSA
+TX path.
+
+Context: operator reports audible glitches (e.g. the word "hundred" in
+the PL report rendered as "h-dred", and similar with "repeater",
+EchoLink traffic and CWID) that are NOT explained by any existing
+svxlink warning, NOT a buffer underrun (svxlink-audio-monitor sees no
+XRUN at the event), and NOT zerofill (svxlink keeps the codec buffer
+full). Confirmed symptom: a chunk of samples vanishes from inside a
+clip, the rest plays at normal speed.
+
+Code-reading the TX chain (MsgHandler -> AudioFifo -> AudioPacer ->
+AudioDeviceAlsa) shows MsgHandler correctly unreads on partial sink
+writes (MsgHandler.cpp:505-508), the tx_fifo does NOT overwrite
+(do_overwrite=false, no setOverwrite call), and AudioPacer
+back-pressures. The one path that silently DROPS already-consumed
+samples with no log is AudioDeviceAlsa::writeSpaceAvailable:
+
+  - getBlocks() fills `buf`, advancing the upstream read pointers
+    (samples are now CONSUMED from MsgHandler/FIFO/Pacer).
+  - snd_pcm_writei() returns < 0 (typically -EPIPE = XRUN). The
+    recovery (startPlayback + continue) throws `buf` away and
+    re-pulls fresh samples on the next loop iteration. The
+    consumed-but-unwritten frames are lost with no message. A brief
+    XRUN that svxlink recovers from within one poll is also too fast
+    for the 200 Hz audio-monitor to observe as an XRUN.
+  - OR snd_pcm_writei() returns 0 <= n < frames_to_write (partial
+    write). The existing "Audio was probably lost" warning covers
+    this but never fires in practice (grep of /var/log/svxlink = 0),
+    pointing at the < 0 XRUN-recover branch as the actual loss path.
+
+This patch adds explicit, greppable log lines on BOTH loss paths with
+cumulative frame counters, so events can be correlated with
+operator-flagged audible glitches. Tag: "*** ORP-DIAG sample-loss:".
+Logging only — no behaviour change. cerr is already captured in
+/var/log/svxlink (the existing "Could not find audio clip" warning
+uses cerr and appears there); <iostream> and snd_strerror are already
+available in this translation unit.
+
+--- src/async/audio/AsyncAudioDeviceAlsa.cpp.orig
++++ src/async/audio/AsyncAudioDeviceAlsa.cpp
+@@ -512,6 +512,23 @@
+     //       blocks_gotten, (int)frames_written);
+     if (frames_written < 0)
+     {
++      // ORP-DIAG patch 09: snd_pcm_writei failed (typically -EPIPE =
++      // XRUN). The frames in buf were already pulled by getBlocks()
++      // above, i.e. CONSUMED from the upstream chain (MsgHandler /
++      // AudioFifo / AudioPacer read pointers already advanced). The
++      // recovery below (startPlayback + continue) discards them with
++      // no retransmit -> silent mid-stream audio loss, exactly the
++      // "shorter word, rest at normal speed" symptom. Log every event.
++      static unsigned long long orp_xrun_lost_frames = 0;
++      if (frames_to_write > 0)
++      {
++        orp_xrun_lost_frames += frames_to_write;
++      }
++      cerr << "*** ORP-DIAG sample-loss: snd_pcm_writei(" << devName()
++           << ") err=" << frames_written << " ("
++           << snd_strerror(frames_written) << "); discarding "
++           << frames_to_write << " consumed frame(s); cum_xrun_lost="
++           << orp_xrun_lost_frames << "\n";
+       if (!startPlayback(play_handle))
+       {
+         watch->setEnabled(false);
+@@ -522,10 +539,20 @@
+
+     if (frames_written != frames_to_write)
+     {
+-      cerr << "*** WARNING: Number of frames written to sound device "
+-           << devName()
+-           << " (" << frames_written << ") differs from what was expected ("
+-           << frames_to_write << "). Audio was probably lost.\n";
++      // ORP-DIAG patch 09: partial write. buf was consumed from the
++      // upstream chain by getBlocks(); the unwritten remainder is
++      // dropped here (return) with no unread -> silent loss.
++      static unsigned long long orp_partial_lost_frames = 0;
++      int orp_lost = frames_to_write - frames_written;
++      if (orp_lost > 0)
++      {
++        orp_partial_lost_frames += orp_lost;
++      }
++      cerr << "*** ORP-DIAG sample-loss: partial snd_pcm_writei("
++           << devName() << ") wrote " << frames_written << " of "
++           << frames_to_write << "; lost " << orp_lost
++           << " consumed frame(s); cum_partial_lost="
++           << orp_partial_lost_frames << "\n";
+       return;
+     }
+
