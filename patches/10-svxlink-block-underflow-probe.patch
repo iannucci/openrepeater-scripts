@@ -1,0 +1,93 @@
+ORP diagnostic patch 10 — log in-clip zerofill underflow in the ALSA TX
+path (the actual silent-splice mechanism).
+
+Builds on patch 09. Code-reading AudioDeviceAlsa::writeSpaceAvailable
+shows the ONE path that drops ~1 block of audio with NO snd_pcm error,
+NO XRUN and NO kernel preemption: getBlocks() returns 0 mid-clip (the
+single event-loop thread did not refill the source FIFO in time) and,
+because zerofill_on_underflow defaults true, a block of SILENCE is
+written via snd_pcm_writei() which SUCCEEDS. Patch 09 only logs the
+writei()<0 / partial-write branches, so it is blind to this. Operator-
+confirmed glitch (flag-20260515-182035) was exactly a ~20-24ms (~1
+block) hard silent splice with all of those negatives.
+
+Removed patch 08 logged zerofill but was pure noise (~3400 lines/day)
+because it logged IDLE underflow too (benign: between transmissions the
+source is legitimately empty). This patch adds the missing in-clip vs
+idle discriminator: it logs ONLY when a real audio block was delivered
+< 750 ms earlier, and emits one START + one END line per contiguous
+splice (greppable "*** ORP-DIAG block-underflow:") with the splice
+length in blocks and the inter-call gap (event-loop turn latency) so
+the single-thread deadline-miss hypothesis is directly testable and
+events correlate with operator-flagged audible glitches. Logging only,
+no behaviour change. cerr is captured in /var/log/svxlink; <chrono> is
+added for a monotonic steady_clock.
+
+--- src/async/audio/AsyncAudioDeviceAlsa.cpp.orig
++++ src/async/audio/AsyncAudioDeviceAlsa.cpp
+@@ -40,6 +40,7 @@
+ #include <sstream>
+ #include <cmath>
+ #include <cstring>
++#include <chrono>   // ORP-DIAG patch 10
+ 
+ 
+ /****************************************************************************
+@@ -491,6 +492,57 @@
+     int16_t buf[space_avail * channels];
+         
+     int blocks_avail = getBlocks(buf, blocks_to_read);
++    // ORP-DIAG patch 10: in-clip zerofill-underflow probe. If getBlocks()
++    // returned 0 and zerofill_on_underflow, a block of silence is spliced
++    // into TX with NO snd_pcm error (patch-09 blind). Log ONLY when it
++    // interrupts active audio (real block < 750ms ago) -- the in-clip vs
++    // idle discriminator removed-patch-08 lacked -- plus the inter-call
++    // gap (event-loop turn latency) to test the single-thread
++    // deadline-miss hypothesis. Logging only, no behaviour change.
++    {
++      using namespace std::chrono;
++      static steady_clock::time_point orp_last_call, orp_last_real;
++      static bool orp_have_call=false, orp_have_real=false, orp_in_run=false;
++      static int orp_run_blocks=0;
++      static double orp_run_max_gap_ms=0.0;
++      static unsigned long long orp_cum_inclip_blocks=0;
++      steady_clock::time_point orp_now=steady_clock::now();
++      double orp_call_gap_ms = orp_have_call ?
++          duration_cast<duration<double,std::milli> >(orp_now-orp_last_call).count() : 0.0;
++      orp_last_call=orp_now; orp_have_call=true;
++      if (blocks_avail == 0)
++      {
++        double orp_since_real_ms = orp_have_real ?
++            duration_cast<duration<double,std::milli> >(orp_now-orp_last_real).count() : 1e12;
++        if (orp_have_real && orp_since_real_ms < 750.0)
++        {
++          if (!orp_in_run)
++          {
++            orp_in_run=true; orp_run_blocks=0; orp_run_max_gap_ms=0.0;
++            cerr << "*** ORP-DIAG block-underflow: START dev=" << devName()
++                 << " inter_call_gap=" << orp_call_gap_ms
++                 << "ms since_last_real_audio=" << orp_since_real_ms
++                 << "ms zerofill=" << (zerofill_on_underflow?1:0) << "\n";
++          }
++          orp_run_blocks++;
++          if (orp_call_gap_ms>orp_run_max_gap_ms) orp_run_max_gap_ms=orp_call_gap_ms;
++          orp_cum_inclip_blocks++;
++        }
++      }
++      else
++      {
++        if (orp_in_run)
++        {
++          cerr << "*** ORP-DIAG block-underflow: END dev=" << devName()
++               << " spliced_blocks=" << orp_run_blocks
++               << " block_frames=" << play_block_size
++               << " max_inter_call_gap=" << orp_run_max_gap_ms
++               << "ms cum_inclip_blocks=" << orp_cum_inclip_blocks << "\n";
++          orp_in_run=false;
++        }
++        orp_last_real=orp_now; orp_have_real=true;
++      }
++    }
+     if (blocks_avail == 0) 
+     {
+       if (zerofill_on_underflow)
