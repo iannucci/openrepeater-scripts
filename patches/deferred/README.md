@@ -38,3 +38,31 @@ timer at `QsoImpl` that bypasses the `!logic_is_idle` guard.
 Adds the `EchoLink JB: ...` diagnostic log lines used to characterize the
 patch-01 behavior. Depends on variables introduced by patch 01, so it
 travels with it. Re-enable together with a re-engineered 01.
+
+### `10-svxlink-block-underflow-probe.patch` (deferred 2026-05-20)
+
+ORP-DIAG block-underflow probe in `AsyncAudioDeviceAlsa.cpp` — logs
+`*** ORP-DIAG block-underflow: START/END ...` on every in-clip
+`getBlocks()==0 → zerofill_on_underflow` event. Built to test the
+silent-splice hypothesis (was the audible glitch caused by in-clip
+zerofill?). A/B-ruled-out 2026-05-19: the audible glitch is post-digital
+(see `project_bench_clean_prod_glitch.md`), and a separate A/B
+on the same day exonerated patch 10 as the cause of the EchoLink
+never-un-keys regression. So patch 10 is **behaviorally safe** — but
+deferred because:
+
+1. **Canonical alignment.** The 2026-05-19 prod rebuild that fixed the
+   never-un-keys regression was built with `03,04,05,06,09` only
+   (without patch 10). With patch 10 in canonical, a fresh build from
+   HEAD would re-introduce it and diverge from the running prod binary
+   for no operational reason. Keeping it in `deferred/` makes
+   canonical-build == currently-running-prod exact.
+2. **Log noise in the hot path.** Patch 10 writes `cerr` from inside
+   `AudioDeviceAlsa::writeSpaceAvailable` (the single-threaded audio
+   callback) on every block-underflow event. During EchoLink inbound
+   it fires steadily — useful when actively diagnosing zerofill-related
+   questions, expensive otherwise (especially on prod's slow FAT32
+   `/var/log`).
+
+Re-enable temporarily when actively diagnosing in-clip zerofill behavior
+(e.g., when re-engineering patch 01); leave deferred for normal operation.
